@@ -2,15 +2,15 @@ import SwiftUI
 import SwiftData
 
 struct GalleryView: View {
-    @Environment(BluetoothManager.self) private var bluetooth
+    @Environment(WearablesManager.self) private var wearables
     @Environment(GlassesState.self) private var glasses
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CaptureRecord.timestamp, order: .reverse) private var captureRecords: [CaptureRecord]
 
-    @State private var selectedCapture: Capture?
     @State private var isDownloading = false
     @State private var downloadProgress: (completed: Int, total: Int) = (0, 0)
     @State private var showExportConfirmation = false
+    @State private var selectedPhotoIndex: Int?
 
     private let columns = [
         GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 4)
@@ -21,17 +21,21 @@ struct GalleryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if captureRecords.isEmpty {
+                if wearables.capturedPhotos.isEmpty && captureRecords.isEmpty {
                     ContentUnavailableView(
                         "No Captures",
                         systemImage: "photo.on.rectangle.angled",
-                        description: Text("Connect your glasses and sync to see photos and videos here.")
+                        description: Text("Connect your glasses and use the camera to capture photos, or sync stored media.")
                     )
                 } else {
                     ScrollView {
-                        LazyVGrid(columns: columns, spacing: 4) {
-                            ForEach(captureRecords, id: \.assetId) { record in
-                                captureTile(record)
+                        VStack(alignment: .leading, spacing: 16) {
+                            if !wearables.capturedPhotos.isEmpty {
+                                livePhotosSection
+                            }
+
+                            if !captureRecords.isEmpty {
+                                storedMediaSection
                             }
                         }
                         .padding(4)
@@ -42,17 +46,20 @@ struct GalleryView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button {
-                            Task { await downloadAll() }
-                        } label: {
-                            Label("Download All", systemImage: "arrow.down.circle")
+                        if wearables.isStreaming {
+                            Button {
+                                _ = wearables.capturePhoto()
+                            } label: {
+                                Label("Take Photo", systemImage: "camera")
+                            }
                         }
-                        .disabled(bluetooth.connectionState != .authenticated)
 
-                        Button {
-                            showExportConfirmation = true
-                        } label: {
-                            Label("Export All to Photos", systemImage: "square.and.arrow.up")
+                        if !captureRecords.isEmpty {
+                            Button {
+                                showExportConfirmation = true
+                            } label: {
+                                Label("Export All to Photos", systemImage: "square.and.arrow.up")
+                            }
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -72,6 +79,58 @@ struct GalleryView: View {
             } message: {
                 Text("Export all downloaded captures to your Photos library?")
             }
+            .sheet(item: $selectedPhotoIndex) { index in
+                photoDetail(index: index)
+            }
+        }
+    }
+
+    // MARK: - Live photos from SDK camera
+
+    private var livePhotosSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Captured This Session")
+                    .font(.headline)
+                    .padding(.horizontal, 8)
+                Spacer()
+                Text("\(wearables.capturedPhotos.count)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+            }
+
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(Array(wearables.capturedPhotos.enumerated()), id: \.offset) { index, photoData in
+                    if let uiImage = UIImage(data: photoData) {
+                        Button {
+                            selectedPhotoIndex = index
+                        } label: {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .aspectRatio(1, contentMode: .fill)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Stored media from SoftAP sync
+
+    private var storedMediaSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Synced from Glasses")
+                .font(.headline)
+                .padding(.horizontal, 8)
+
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(captureRecords, id: \.assetId) { record in
+                    captureTile(record)
+                }
+            }
         }
     }
 
@@ -82,13 +141,9 @@ struct GalleryView: View {
         let capture = record.toCapture(baseDirectory: store.mediaDirectory)
 
         Button {
-            selectedCapture = capture
-            if !capture.isDownloaded {
-                Task { await downloadSingle(capture) }
-            }
+            // Future: open detail view
         } label: {
             ZStack(alignment: .bottomTrailing) {
-                // Thumbnail or placeholder
                 if let thumbURL = capture.thumbnailURL,
                    FileManager.default.fileExists(atPath: thumbURL.path) {
                     AsyncImage(url: thumbURL) { image in
@@ -102,7 +157,6 @@ struct GalleryView: View {
                     thumbnailPlaceholder(capture)
                 }
 
-                // Type badge
                 HStack(spacing: 2) {
                     Image(systemName: capture.type.systemImage)
                         .font(.caption2)
@@ -132,35 +186,48 @@ struct GalleryView: View {
             }
     }
 
-    // MARK: - Download
+    // MARK: - Photo detail
 
-    private func downloadSingle(_ capture: Capture) async {
-        // Placeholder: actual download would use MediaDownloader + SoftAPManager
-        // This wires up the UI flow for when those are connected
+    private func photoDetail(index: Int) -> some View {
+        NavigationStack {
+            if index < wearables.capturedPhotos.count,
+               let uiImage = UIImage(data: wearables.capturedPhotos[index]) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .navigationTitle("Photo \(index + 1)")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                saveToPhotos(wearables.capturedPhotos[index])
+                            } label: {
+                                Image(systemName: "square.and.arrow.down")
+                            }
+                        }
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") {
+                                selectedPhotoIndex = nil
+                            }
+                        }
+                    }
+            }
+        }
     }
 
-    private func downloadAll() async {
-        isDownloading = true
-        downloadProgress = (0, captureRecords.count)
+    // MARK: - Export
 
-        // This will be wired to MediaDownloader.downloadBatch()
-        // For now, track progress state
-        for i in 0..<captureRecords.count {
-            try? await Task.sleep(for: .milliseconds(100))
-            downloadProgress = (i + 1, captureRecords.count)
-        }
-
-        isDownloading = false
+    private func saveToPhotos(_ data: Data) {
+        guard let image = UIImage(data: data) else { return }
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
     }
 
     private func exportAll() async {
         let captures = captureRecords.map { $0.toCapture(baseDirectory: store.mediaDirectory) }
         do {
-            try await store.exportAllToPhotos(captures: captures) { completed, total in
-                // Progress callback
-            }
+            try await store.exportAllToPhotos(captures: captures) { _, _ in }
         } catch {
-            // Handle error in production
+            // Handle error
         }
     }
 
@@ -184,4 +251,8 @@ struct GalleryView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .padding(32)
     }
+}
+
+extension Int: @retroactive Identifiable {
+    public var id: Int { self }
 }

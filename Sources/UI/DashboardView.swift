@@ -1,29 +1,20 @@
 import SwiftUI
 
 struct DashboardView: View {
-    @Environment(BluetoothManager.self) private var bluetooth
+    @Environment(WearablesManager.self) private var wearables
     @Environment(GlassesState.self) private var glasses
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    // Connection card
                     connectionCard
 
-                    if bluetooth.connectionState == .connected ||
-                       bluetooth.connectionState == .authenticated {
-                        // Battery card
+                    if wearables.isConnected {
+                        cameraCard
                         batteryCard
-
-                        // Storage card
                         storageCard
-
-                        // Captures card
                         capturesCard
-
-                        // Device info card
-                        deviceInfoCard
                     }
                 }
                 .padding()
@@ -45,54 +36,109 @@ struct DashboardView: View {
                 Image(systemName: connectionIcon)
                     .font(.title2)
                     .foregroundStyle(connectionColor)
-                    .symbolEffect(.pulse, isActive: bluetooth.connectionState == .scanning || bluetooth.connectionState == .connecting)
+                    .symbolEffect(
+                        .pulse,
+                        isActive: wearables.connectionState == .connecting ||
+                                  wearables.connectionState == .registering
+                    )
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(bluetooth.connectionState.rawValue.capitalized)
+                    Text(connectionLabel)
                         .font(.headline)
-                    if let name = bluetooth.modelNumber {
-                        Text(name)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(connectionSubtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
 
                 Spacer()
             }
 
-            if bluetooth.connectionState == .disconnected {
+            switch wearables.connectionState {
+            case .unregistered, .error:
                 Button {
-                    bluetooth.startScanning()
+                    wearables.register()
                 } label: {
-                    Text("Scan for Glasses")
+                    Text("Register with Glasses")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+            case .registered:
+                Button {
+                    wearables.startSession()
+                } label: {
+                    Text("Connect to Glasses")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+            default:
+                EmptyView()
+            }
+
+            if let error = wearables.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Camera card
+
+    private var cameraCard: some View {
+        VStack(spacing: 12) {
+            if wearables.isStreaming, let frame = wearables.latestFrame {
+                Image(uiImage: frame)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                HStack(spacing: 16) {
+                    Button {
+                        _ = wearables.capturePhoto()
+                    } label: {
+                        Label("Capture", systemImage: "camera.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+
+                    Button {
+                        wearables.stopCamera()
+                    } label: {
+                        Label("Stop", systemImage: "stop.circle")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else if wearables.connectionState == .connected {
+                VStack(spacing: 8) {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.secondary)
+                    Text("Camera Ready")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(height: 200)
+
+                Button {
+                    Task { await wearables.startCamera() }
+                } label: {
+                    Label("Start Camera", systemImage: "video")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
             }
 
-            // Show discovered peripherals
-            if bluetooth.connectionState == .scanning,
-               !bluetooth.discoveredPeripherals.isEmpty {
-                ForEach(bluetooth.discoveredPeripherals, id: \.identifier) { peripheral in
-                    Button {
-                        bluetooth.connect(to: peripheral)
-                    } label: {
-                        HStack {
-                            Image(systemName: "eyeglasses")
-                            Text(peripheral.name ?? "Unknown Device")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                    }
+            if !wearables.capturedPhotos.isEmpty {
+                HStack {
+                    Text("\(wearables.capturedPhotos.count) photos captured")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
                 }
-            }
-
-            if let error = bluetooth.lastError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
             }
         }
         .padding()
@@ -161,7 +207,7 @@ struct DashboardView: View {
                     .font(.title2)
                     .fontWeight(.semibold)
                     .monospacedDigit()
-                Text("Total")
+                Text("On Device")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -199,59 +245,52 @@ struct DashboardView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    // MARK: - Device info card
-
-    private var deviceInfoCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Device Info")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            if let model = glasses.modelNumber {
-                infoRow("Model", value: model)
-            }
-            if let serial = glasses.serialNumber {
-                infoRow("Serial", value: serial)
-            }
-            if let firmware = glasses.firmwareVersion {
-                infoRow("Firmware", value: firmware)
-            }
-            if let temp = glasses.temperatureCelsius {
-                infoRow("Temperature", value: String(format: "%.0f°C", temp))
-            }
-        }
-        .padding()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-    }
-
-    private func infoRow(_ label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .monospacedDigit()
-        }
-        .font(.subheadline)
-    }
-
-    // MARK: - Computed properties
+    // MARK: - Computed
 
     private var connectionIcon: String {
-        switch bluetooth.connectionState {
-        case .disconnected: return "eyeglasses"
-        case .scanning: return "antenna.radiowaves.left.and.right"
-        case .connecting, .discoveringServices: return "ellipsis.circle"
+        switch wearables.connectionState {
+        case .unregistered, .error: return "eyeglasses"
+        case .registering: return "person.badge.key"
+        case .registered: return "eyeglasses"
+        case .connecting, .disconnecting: return "ellipsis.circle"
         case .connected: return "eyeglasses"
-        case .authenticated: return "checkmark.circle.fill"
+        case .streaming: return "video.circle.fill"
         }
     }
 
     private var connectionColor: Color {
-        switch bluetooth.connectionState {
-        case .disconnected: return .secondary
-        case .scanning, .connecting, .discoveringServices: return .orange
-        case .connected, .authenticated: return .green
+        switch wearables.connectionState {
+        case .unregistered, .error: return .secondary
+        case .registering, .connecting, .disconnecting: return .orange
+        case .registered: return .blue
+        case .connected: return .green
+        case .streaming: return .green
+        }
+    }
+
+    private var connectionLabel: String {
+        switch wearables.connectionState {
+        case .unregistered: return "Not Registered"
+        case .registering: return "Registering..."
+        case .registered: return "Ready"
+        case .connecting: return "Connecting..."
+        case .connected: return "Connected"
+        case .streaming: return "Streaming"
+        case .disconnecting: return "Disconnecting..."
+        case .error: return "Error"
+        }
+    }
+
+    private var connectionSubtitle: String {
+        switch wearables.connectionState {
+        case .unregistered: return "Register to connect to your glasses"
+        case .registering: return "Complete setup in the Meta AI app"
+        case .registered: return "Tap Connect to start a session"
+        case .connecting: return "Establishing session..."
+        case .connected: return "Session active"
+        case .streaming: return "Live camera feed"
+        case .disconnecting: return "Ending session..."
+        case .error: return wearables.lastError ?? "Something went wrong"
         }
     }
 

@@ -36,14 +36,55 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>openglass</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>com.openglass.app</string>
+		</dict>
+	</array>
+	<key>MWDAT</key>
+	<dict>
+		<key>AppLinkScheme</key>
+		<string>openglass</string>
+		<key>AppId</key>
+		<string></string>
+		<key>ClientToken</key>
+		<string></string>
+		<key>TeamId</key>
+		<string></string>
+		<key>Analytics</key>
+		<dict>
+			<key>OptOut</key>
+			<true/>
+		</dict>
+		<key>CrashReporting</key>
+		<dict>
+			<key>OptOut</key>
+			<true/>
+		</dict>
+	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
+		<string>external-accessory</string>
+	</array>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.meta.wearables</string>
+	</array>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mwdat._tcp</string>
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>OpenGlass needs Bluetooth to communicate with your Ray-Ban Stories glasses.</string>
+	<string>OpenGlass needs Bluetooth to communicate with your Ray-Ban glasses.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>OpenGlass needs Bluetooth to communicate with your Ray-Ban Stories glasses.</string>
+	<string>OpenGlass needs Bluetooth to communicate with your Ray-Ban glasses.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OpenGlass connects to your glasses over Wi-Fi to download photos and videos.</string>
 	<key>NSMicrophoneUsageDescription</key>

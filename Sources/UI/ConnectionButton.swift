@@ -1,9 +1,7 @@
 import SwiftUI
 
-/// A toolbar button that reflects the current Bluetooth connection state
-/// and provides scan/connect/disconnect actions.
 struct ConnectionButton: View {
-    @Environment(BluetoothManager.self) private var bluetooth
+    @Environment(WearablesManager.self) private var wearables
 
     var body: some View {
         Button {
@@ -20,32 +18,32 @@ struct ConnectionButton: View {
         .tint(statusTint)
     }
 
-    // MARK: - Indicator dot / icon
+    // MARK: - Indicator
 
     @ViewBuilder
     private var connectionIndicator: some View {
-        switch bluetooth.connectionState {
-        case .disconnected:
+        switch wearables.connectionState {
+        case .unregistered, .error:
             Circle()
                 .fill(.secondary)
                 .frame(width: 8, height: 8)
 
-        case .scanning:
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.caption2)
-                .symbolEffect(.variableColor.iterative)
-
-        case .connecting, .discoveringServices:
+        case .registering, .connecting, .disconnecting:
             ProgressView()
                 .controlSize(.mini)
+
+        case .registered:
+            Circle()
+                .fill(.blue)
+                .frame(width: 8, height: 8)
 
         case .connected:
             Circle()
                 .fill(.green)
                 .frame(width: 8, height: 8)
 
-        case .authenticated:
-            Image(systemName: "checkmark.circle.fill")
+        case .streaming:
+            Image(systemName: "video.circle.fill")
                 .font(.caption2)
                 .foregroundStyle(.green)
         }
@@ -54,36 +52,38 @@ struct ConnectionButton: View {
     // MARK: - Computed
 
     private var statusLabel: String {
-        switch bluetooth.connectionState {
-        case .disconnected: return "Connect"
-        case .scanning: return "Scanning"
-        case .connecting, .discoveringServices: return "Connecting"
+        switch wearables.connectionState {
+        case .unregistered: return "Register"
+        case .registering: return "Registering"
+        case .registered: return "Connect"
+        case .connecting: return "Connecting"
         case .connected: return "Connected"
-        case .authenticated: return "Ready"
+        case .streaming: return "Live"
+        case .disconnecting: return "Ending"
+        case .error: return "Error"
         }
     }
 
     private var statusTint: Color {
-        switch bluetooth.connectionState {
-        case .disconnected: return .secondary
-        case .scanning: return .orange
-        case .connecting, .discoveringServices: return .orange
-        case .connected, .authenticated: return .green
+        switch wearables.connectionState {
+        case .unregistered, .error: return .secondary
+        case .registering, .connecting, .disconnecting: return .orange
+        case .registered: return .blue
+        case .connected, .streaming: return .green
         }
     }
 
     // MARK: - Action
 
     private func handleTap() {
-        switch bluetooth.connectionState {
-        case .disconnected:
-            bluetooth.startScanning()
-        case .scanning:
-            bluetooth.stopScanning()
-        case .connected, .authenticated:
-            bluetooth.disconnect()
-        case .connecting, .discoveringServices:
-            // Already in progress, do nothing
+        switch wearables.connectionState {
+        case .unregistered, .error:
+            wearables.register()
+        case .registered:
+            wearables.startSession()
+        case .connected, .streaming:
+            wearables.stopSession()
+        case .registering, .connecting, .disconnecting:
             break
         }
     }
