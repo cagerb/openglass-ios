@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct DashboardView: View {
-    @Environment(WearablesManager.self) private var wearables
+    @Environment(GlassesController.self) private var controller
     @Environment(GlassesState.self) private var glasses
 
     var body: some View {
@@ -10,11 +10,18 @@ struct DashboardView: View {
                 VStack(spacing: 20) {
                     connectionCard
 
-                    if wearables.isConnected {
-                        cameraCard
+                    if !controller.hasIdentity && controller.state != .disconnected {
+                        identityWarning
+                    }
+
+                    if controller.state == .scanning && !controller.discoveredPeripherals.isEmpty {
+                        discoveredDevicesCard
+                    }
+
+                    if controller.isConnected {
+                        deviceInfoCard
                         batteryCard
                         storageCard
-                        capturesCard
                     }
                 }
                 .padding()
@@ -38,8 +45,9 @@ struct DashboardView: View {
                     .foregroundStyle(connectionColor)
                     .symbolEffect(
                         .pulse,
-                        isActive: wearables.connectionState == .connecting ||
-                                  wearables.connectionState == .registering
+                        isActive: controller.state == .scanning ||
+                                  controller.state == .connecting ||
+                                  controller.state == .authenticating
                     )
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -53,96 +61,159 @@ struct DashboardView: View {
                 Spacer()
             }
 
-            switch wearables.connectionState {
-            case .unregistered, .error:
+            switch controller.state {
+            case .disconnected:
                 Button {
-                    wearables.register()
+                    controller.startScan()
                 } label: {
-                    Text("Register with Glasses")
+                    Text("Scan for Glasses")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
 
-            case .registered:
+            case .scanning:
                 Button {
-                    wearables.startSession()
+                    controller.stopScan()
                 } label: {
-                    Text("Connect to Glasses")
+                    Text("Stop Scanning")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+
+            case .connected:
+                if controller.hasIdentity {
+                    Button {
+                        Task { await controller.authenticate() }
+                    } label: {
+                        Text("Authenticate")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
 
             default:
                 EmptyView()
             }
 
-            if let error = wearables.lastError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+            if let error = controller.lastError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                .padding(.top, 4)
+
+                Button("Dismiss") {
+                    controller.clearError()
+                }
+                .font(.caption)
             }
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    // MARK: - Camera card
+    // MARK: - Identity warning
 
-    private var cameraCard: some View {
-        VStack(spacing: 12) {
-            if wearables.isStreaming, let frame = wearables.latestFrame {
-                Image(uiImage: frame)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                HStack(spacing: 16) {
-                    Button {
-                        _ = wearables.capturePhoto()
-                    } label: {
-                        Label("Capture", systemImage: "camera.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-
-                    Button {
-                        wearables.stopCamera()
-                    } label: {
-                        Label("Stop", systemImage: "stop.circle")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            } else if wearables.connectionState == .connected {
-                VStack(spacing: 8) {
-                    Image(systemName: "camera.viewfinder")
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("Camera Ready")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(height: 200)
-
-                Button {
-                    Task { await wearables.startCamera() }
-                } label: {
-                    Label("Start Camera", systemImage: "video")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
+    private var identityWarning: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Image(systemName: "key.slash")
+                    .foregroundStyle(.orange)
+                Text("Identity Not Imported")
+                    .font(.headline)
             }
 
-            if !wearables.capturedPhotos.isEmpty {
-                HStack {
-                    Text("\(wearables.capturedPhotos.count) photos captured")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+            Text("You need to import your glasses identity (RSA key + bootstrap ticket) before you can authenticate. See Settings for the extraction guide.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
+        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Discovered devices
+
+    private var discoveredDevicesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Nearby Glasses")
+                .font(.headline)
+                .padding(.horizontal, 4)
+
+            ForEach(controller.discoveredPeripherals, id: \.identifier) { peripheral in
+                Button {
+                    controller.connect(to: peripheral)
+                } label: {
+                    HStack {
+                        Image(systemName: "eyeglasses")
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(peripheral.name ?? "Unknown Device")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Text(peripheral.identifier.uuidString.prefix(8) + "...")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                 }
+                .buttonStyle(.plain)
             }
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Device info card
+
+    private var deviceInfoCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "info.circle")
+                    .foregroundStyle(.blue)
+                Text("Device")
+                    .font(.headline)
+                Spacer()
+                if controller.state == .authenticated {
+                    Label("Authenticated", systemImage: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+
+            if let model = controller.bluetooth.modelNumber {
+                infoRow("Model", value: model)
+            }
+            if let firmware = controller.bluetooth.firmwareRevision {
+                infoRow("Firmware", value: firmware)
+            }
+            if let serial = controller.bluetooth.serialNumber {
+                infoRow("Serial", value: serial)
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func infoRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.subheadline)
+                .monospacedDigit()
+        }
     }
 
     // MARK: - Battery card
@@ -157,19 +228,19 @@ struct DashboardView: View {
                 Text("Battery")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Text(glasses.batteryDisplayString)
-                    .font(.title)
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
+                if let pct = controller.bluetooth.batteryLevel {
+                    Text("\(pct)%")
+                        .font(.title)
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                } else {
+                    Text("--")
+                        .font(.title)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()
-
-            if glasses.isCharging {
-                Label("Charging", systemImage: "bolt.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            }
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -198,104 +269,55 @@ struct DashboardView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    // MARK: - Captures card
-
-    private var capturesCard: some View {
-        HStack(spacing: 24) {
-            VStack(spacing: 4) {
-                Text("\(glasses.captureCount)")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-                Text("On Device")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-                .frame(height: 40)
-
-            VStack(spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(systemName: "photo")
-                    Text("\(glasses.photoCount)")
-                        .monospacedDigit()
-                }
-                .font(.subheadline)
-                Text("Photos")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(spacing: 4) {
-                HStack(spacing: 4) {
-                    Image(systemName: "video")
-                    Text("\(glasses.videoCount)")
-                        .monospacedDigit()
-                }
-                .font(.subheadline)
-                Text("Videos")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-        }
-        .padding()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-    }
-
     // MARK: - Computed
 
     private var connectionIcon: String {
-        switch wearables.connectionState {
-        case .unregistered, .error: return "eyeglasses"
-        case .registering: return "person.badge.key"
-        case .registered: return "eyeglasses"
-        case .connecting, .disconnecting: return "ellipsis.circle"
+        switch controller.state {
+        case .disconnected, .error: return "eyeglasses"
+        case .scanning: return "antenna.radiowaves.left.and.right"
+        case .connecting: return "ellipsis.circle"
         case .connected: return "eyeglasses"
-        case .streaming: return "video.circle.fill"
+        case .authenticating: return "lock.rotation"
+        case .authenticated: return "checkmark.shield.fill"
         }
     }
 
     private var connectionColor: Color {
-        switch wearables.connectionState {
-        case .unregistered, .error: return .secondary
-        case .registering, .connecting, .disconnecting: return .orange
-        case .registered: return .blue
-        case .connected: return .green
-        case .streaming: return .green
+        switch controller.state {
+        case .disconnected, .error: return .secondary
+        case .scanning, .connecting, .authenticating: return .orange
+        case .connected: return .blue
+        case .authenticated: return .green
         }
     }
 
     private var connectionLabel: String {
-        switch wearables.connectionState {
-        case .unregistered: return "Not Registered"
-        case .registering: return "Registering..."
-        case .registered: return "Ready"
+        switch controller.state {
+        case .disconnected: return "Disconnected"
+        case .scanning: return "Scanning..."
         case .connecting: return "Connecting..."
         case .connected: return "Connected"
-        case .streaming: return "Streaming"
-        case .disconnecting: return "Disconnecting..."
+        case .authenticating: return "Authenticating..."
+        case .authenticated: return "Authenticated"
         case .error: return "Error"
         }
     }
 
     private var connectionSubtitle: String {
-        switch wearables.connectionState {
-        case .unregistered: return "Register to connect to your glasses"
-        case .registering: return "Complete setup in the Meta AI app"
-        case .registered: return "Tap Connect to start a session"
-        case .connecting: return "Establishing session..."
-        case .connected: return "Session active"
-        case .streaming: return "Live camera feed"
-        case .disconnecting: return "Ending session..."
-        case .error: return wearables.lastError ?? "Something went wrong"
+        switch controller.state {
+        case .disconnected: return "Scan to find your glasses"
+        case .scanning: return "Looking for Ray-Ban Stories nearby"
+        case .connecting: return "Establishing BLE connection"
+        case .connected where controller.hasIdentity: return "Ready to authenticate"
+        case .connected: return "Import identity to authenticate"
+        case .authenticating: return "Running PhaseB handshake"
+        case .authenticated: return "Full access to glasses"
+        case .error: return controller.lastError ?? "Something went wrong"
         }
     }
 
     private var batteryIcon: String {
-        guard let pct = glasses.batteryPercent else { return "battery.0percent" }
+        guard let pct = controller.bluetooth.batteryLevel else { return "battery.0percent" }
         switch pct {
         case 76...100: return "battery.100percent"
         case 51...75: return "battery.75percent"
@@ -306,7 +328,7 @@ struct DashboardView: View {
     }
 
     private var batteryColor: Color {
-        guard let pct = glasses.batteryPercent else { return .secondary }
+        guard let pct = controller.bluetooth.batteryLevel else { return .secondary }
         switch pct {
         case 51...100: return .green
         case 21...50: return .orange

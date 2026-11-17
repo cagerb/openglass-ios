@@ -1,47 +1,79 @@
 # OpenGlass
 
-An open-source iOS companion app for **Meta Ray-Ban Stories gen 1** smart glasses. Replaces the official Meta AI app with full local control over your glasses — no cloud, no Meta account required after initial setup.
+An open-source iOS companion app for **Meta Ray-Ban Stories gen 1** smart glasses. Fully replaces the official Meta AI app — no Meta cloud, no Meta account, no ongoing dependency.
 
 ## What it does
 
-- **Official SDK connection** — uses the [Meta Wearables DAT SDK](https://github.com/facebook/meta-wearables-dat-ios) for BLE pairing and session management (no key extraction needed)
-- **Live camera streaming** — real-time video feed from your glasses to your iPhone
-- **Photo capture** — snap photos through the app while streaming
-- **Audio streaming** — access to glasses microphone (foundation for Claude voice assistant)
-- **Media transfer** — SoftAP Wi-Fi download of stored photos and videos from the glasses
+- **Independent BLE connection** — connects directly to your glasses over Bluetooth using the reverse-engineered DataX protocol
+- **RSA+AES authentication** — full PhaseB handshake (RSA-OAEP + AES-256-GCM) with identity extracted once from the Meta AI app
+- **Media transfer** — downloads stored photos and videos from the glasses via SoftAP (the glasses' built-in Wi-Fi access point)
 - **Local storage** — saves captures with SwiftData, exports to the iOS Photos library
-- **Gallery** — grid view of captures with live session photos and stored media
-- **Dashboard** — connection status, live camera preview, battery, and storage info
+- **Gallery** — grid view of downloaded media
+- **Dashboard** — scan, connect, authenticate, and view device info (battery, firmware, serial)
+- **Delete Meta AI** — after one-time key extraction, the Meta AI app can be removed permanently
+
+## How it works
+
+The glasses use a proprietary BLE protocol over a single GATT characteristic. OpenGlass implements the full protocol stack:
+
+1. **BLE scanning** — finds "RB Stories" devices via the Meta service UUID (`0xFD5F`)
+2. **GATT connection** — subscribes to the DataX characteristic for all command/response traffic
+3. **PhaseB authentication** — 4-step handshake using your extracted RSA key and bootstrap ticket
+4. **Encrypted commands** — AES-256-GCM with 96-bit truncated tags over the DataX channel
+5. **SoftAP media download** — triggers the glasses' Wi-Fi AP, connects, and downloads over HTTPS
 
 ## Requirements
 
 - iOS 17.2+
 - Xcode 26.4+ (Swift 6.3)
-- [XcodeGen](https://github.com/yonaskolb/XcodeGen) (to generate the `.xcodeproj`)
-- Meta Ray-Ban Stories gen 1 or gen 2 glasses
-- Meta AI app installed (for one-time Developer Mode setup and registration)
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+- Meta Ray-Ban Stories gen 1 glasses
+- One-time access to the Meta AI app for key extraction (then delete it)
 
 ## First-time setup
 
-1. Install the Meta AI app on your iPhone
-2. Connect your glasses to the Meta AI app normally
-3. Enable **Developer Mode**: Settings > App Info > tap version number 5 times > toggle Developer Mode on
-4. Open OpenGlass and tap **Register with Glasses** — this opens the Meta AI app to authorize the connection
-5. Once registered, tap **Connect to Glasses** to start a session
+### 1. Extract your identity (one time only)
+
+You need to extract your RSA private key and bootstrap ticket from the Meta AI app. This requires:
+
+- A Mac with Frida installed (`pip install frida-tools`)
+- A FairPlay-decrypted copy of the Meta AI IPA (use bagbak, frida-ios-dump, or CrackerXI+)
+- Your Apple developer certificate for re-signing
+
+Steps:
+
+1. Inject `FridaGadget.dylib` into the decrypted Meta AI IPA
+2. Re-sign and sideload via AltStore
+3. Connect your iPhone to your Mac via USB
+4. Run: `frida -U "Meta AI" -l tools/extract_keys.js`
+5. In the patched app, unpair and re-pair your glasses
+6. Copy the printed `RSA_KEY_HEX` and `TICKET_HEX` values
+
+### 2. Import into OpenGlass
+
+1. Open OpenGlass > Settings > Import Identity
+2. Paste the RSA key hex and bootstrap ticket hex
+3. Tap Import
+
+### 3. Connect
+
+1. Go to Dashboard > Scan for Glasses
+2. Tap your glasses when they appear
+3. Tap Authenticate
+
+Done. Delete the Meta AI app.
 
 ## Build
 
 ```bash
-# Install XcodeGen if you haven't
 brew install xcodegen
-
-# Generate the Xcode project
 xcodegen generate
-
-# Open in Xcode
 open OpenGlass.xcodeproj
+```
 
-# Or build from the command line (unsigned, for sideloading)
+Or build from CLI:
+
+```bash
 xcodebuild archive \
   -project OpenGlass.xcodeproj \
   -scheme OpenGlass \
@@ -55,36 +87,30 @@ xcodebuild archive \
 
 ## Sideloading
 
-Install the unsigned `.ipa` on your iPhone with:
+Install the unsigned `.ipa` with:
 
-- **AltStore** — drag the `.ipa` into AltStore (7-day refresh with free Apple ID)
-- **Sideloadly** — connect your iPhone and sideload
-- **TrollStore** — if your device supports it, install directly
+- **AltStore** — drag the .ipa (7-day refresh with free Apple ID)
+- **Sideloadly** — connect via USB and sideload
+- **TrollStore** — if supported, install directly
 
 ## Project structure
 
 ```
 Sources/
-  App/            — SwiftUI app entry, root views, Info.plist
-  SDK/            — Meta Wearables DAT SDK wrapper (connection, camera, session)
-  Bluetooth/      — CoreBluetooth wrapper, GATT constants, DataX framing (SoftAP commands)
-  Crypto/         — AES-256-GCM, RSA-OAEP, PhaseB handshake (legacy, kept for reference)
+  App/            — SwiftUI app entry, GlassesController, root views
+  Bluetooth/      — CoreBluetooth wrapper, GATT constants, DataX framing
+  Crypto/         — AES-256-GCM, RSA-OAEP, PhaseB handshake, identity keychain
   MediaTransfer/  — SoftAP Wi-Fi management, HTTPS media downloads
   Models/         — Observable glasses state, capture metadata, SwiftData models
   Storage/        — Local file management, Photos export
   UI/             — Dashboard, Gallery, Settings, ConnectionButton
+tools/
+  extract_keys.js — Frida script for one-time key extraction
 ```
-
-## Architecture
-
-OpenGlass uses a **hybrid approach**:
-
-- **Meta DAT SDK** handles BLE connection, authentication, camera streaming, and audio — no manual key extraction or reverse-engineered handshake needed
-- **Custom SoftAP code** handles downloading stored media (photos/videos already on the glasses) over the glasses' built-in Wi-Fi access point, since the SDK doesn't support media transfer yet
 
 ## Privacy
 
-All data stays on your iPhone. The SDK communicates directly with the glasses over Bluetooth — no Meta cloud, no telemetry (SDK analytics and crash reporting are opted out in Info.plist). Your photos and videos are stored locally in the app's Documents directory.
+Everything stays on your iPhone. OpenGlass communicates directly with the glasses over Bluetooth and Wi-Fi — no cloud, no telemetry, no Meta servers. Your RSA key and bootstrap ticket are stored in the iOS Keychain, encrypted at rest.
 
 ## License
 

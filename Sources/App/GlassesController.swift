@@ -1,0 +1,189 @@
+import Foundation
+import CoreBluetooth
+import SwiftUI
+import os
+
+@Observable
+@MainActor
+final class GlassesController {
+
+    enum State: String, Sendable {
+        case disconnected
+        case scanning
+        case connecting
+        case connected
+        case authenticating
+        case authenticated
+        case error
+    }
+
+    // MARK: - Published state
+
+    private(set) var state: State = .disconnected
+    private(set) var discoveredPeripherals: [CBPeripheral] = []
+    private(set) var lastError: String?
+    private(set) var hasIdentity = false
+
+    // MARK: - Dependencies
+
+    let bluetooth = BluetoothManager()
+    private let sessionCrypto = SessionCrypto()
+    private lazy var authHandshake = AuthHandshake(bluetooth: bluetooth, sessionCrypto: sessionCrypto)
+    private let identityStore = IdentityStore()
+    private let logger = Logger(subsystem: "com.openglass.app", category: "GlassesController")
+
+    // MARK: - Init
+
+    init() {
+        bluetooth.onDataXMessage = { [weak self] data in
+            Task { @MainActor [weak self] in
+                await self?.handleDataXMessage(data)
+            }
+        }
+    }
+
+    // MARK: - Identity check
+
+    func checkIdentity() async {
+        hasIdentity = await identityStore.hasRSAKeyPair() && await identityStore.hasBootstrapTicket()
+    }
+
+    // MARK: - Scanning
+
+    func startScan() {
+        lastError = nil
+        state = .scanning
+        bluetooth.startScanning()
+        observeBluetooth()
+    }
+
+    func stopScan() {
+        bluetooth.stopScanning()
+        state = .disconnected
+    }
+
+    // MARK: - Connection
+
+    func connect(to peripheral: CBPeripheral) {
+        state = .connecting
+        bluetooth.connect(to: peripheral)
+    }
+
+    func disconnect() {
+        bluetooth.disconnect()
+        state = .disconnected
+    }
+
+    // MARK: - Authentication
+
+    func authenticate() async {
+        guard state == .connected, hasIdentity else { return }
+        state = .authenticating
+
+        do {
+            try await authHandshake.performHandshake()
+            state = .authenticated
+            logger.info("Authentication successful")
+        } catch {
+            state = .error
+            lastError = error.localizedDescription
+            logger.error("Authentication failed: \(error)")
+        }
+    }
+
+    // MARK: - Identity import
+
+    func importIdentity(rsaKeyData: Data, bootstrapTicket: Data) async throws {
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrKeySizeInBits as String: 2048,
+        ]
+        var importError: Unmanaged<CFError>?
+        guard let key = SecKeyCreateWithData(rsaKeyData as CFData, attributes as CFDictionary, &importError) else {
+            throw CryptoError.invalidKeyData
+        }
+        try await identityStore.saveRSAPrivateKey(key)
+        guard let pubKey = SecKeyCopyPublicKey(key) else {
+            throw CryptoError.invalidKeyData
+        }
+        var pubError: Unmanaged<CFError>?
+        guard let pubData = SecKeyCopyExternalRepresentation(pubKey, &pubError) as Data? else {
+            throw CryptoError.invalidKeyData
+        }
+        try await identityStore.saveRSAPublicKeyData(pubData)
+        try await identityStore.saveBootstrapTicket(bootstrapTicket)
+        hasIdentity = true
+        logger.info("Identity imported successfully")
+    }
+
+    func deleteIdentity() async {
+        await identityStore.deleteAll()
+        hasIdentity = false
+        if state == .authenticated {
+            disconnect()
+        }
+    }
+
+    // MARK: - Bluetooth observation
+
+    private func observeBluetooth() {
+        Task.detached { [weak self] in
+            while true {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self else { return }
+                await MainActor.run {
+                    self.syncBluetoothState()
+                }
+            }
+        }
+    }
+
+    private func syncBluetoothState() {
+        discoveredPeripherals = bluetooth.discoveredPeripherals
+
+        if let error = bluetooth.lastError, lastError == nil {
+            lastError = error
+        }
+
+        switch bluetooth.connectionState {
+        case .disconnected:
+            if state == .connecting || state == .connected || state == .authenticating || state == .authenticated {
+                state = .disconnected
+            }
+        case .scanning:
+            break
+        case .connecting, .discoveringServices:
+            if state != .connecting {
+                state = .connecting
+            }
+        case .connected:
+            if state == .connecting {
+                state = .connected
+            }
+        case .authenticated:
+            break
+        }
+    }
+
+    // MARK: - DataX message routing
+
+    private func handleDataXMessage(_ data: Data) async {
+        if state == .authenticating {
+            await authHandshake.handleIncomingMessage(data)
+        }
+    }
+
+    // MARK: - Convenience
+
+    var isConnected: Bool {
+        state == .connected || state == .authenticated || state == .authenticating
+    }
+
+    func clearError() {
+        lastError = nil
+        if state == .error {
+            state = .disconnected
+        }
+    }
+}

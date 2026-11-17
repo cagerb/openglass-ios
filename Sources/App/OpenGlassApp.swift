@@ -3,19 +3,16 @@ import SwiftData
 
 @main
 struct OpenGlassApp: App {
-    @State private var wearables = WearablesManager()
+    @State private var controller = GlassesController()
     @State private var glassesState = GlassesState()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environment(wearables)
+                .environment(controller)
                 .environment(glassesState)
-                .onOpenURL { url in
-                    _ = wearables.handleURL(url)
-                }
                 .task {
-                    wearables.configure()
+                    await controller.checkIdentity()
                 }
         }
         .modelContainer(for: [CaptureRecord.self])

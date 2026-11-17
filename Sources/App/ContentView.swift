@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(WearablesManager.self) private var wearables
+    @Environment(GlassesController.self) private var controller
     @Environment(GlassesState.self) private var glassesState
 
     var body: some View {

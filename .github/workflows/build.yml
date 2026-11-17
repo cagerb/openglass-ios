@@ -24,8 +24,7 @@ jobs:
       - name: Check syntax (all .swift files)
         run: |
           echo "Checking Swift files for syntax errors..."
-          echo "(Skipping Sources/SDK/ — requires iOS SDK modules)"
-          find Sources -name '*.swift' -not -path 'Sources/SDK/*' | while read f; do
+          find Sources -name '*.swift' | while read f; do
             echo "  Checking $f"
             swiftc -parse "$f" 2>&1 || true
           done

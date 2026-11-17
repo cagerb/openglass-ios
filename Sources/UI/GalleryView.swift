@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct GalleryView: View {
-    @Environment(WearablesManager.self) private var wearables
+    @Environment(GlassesController.self) private var controller
     @Environment(GlassesState.self) private var glasses
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CaptureRecord.timestamp, order: .reverse) private var captureRecords: [CaptureRecord]
@@ -10,7 +10,6 @@ struct GalleryView: View {
     @State private var isDownloading = false
     @State private var downloadProgress: (completed: Int, total: Int) = (0, 0)
     @State private var showExportConfirmation = false
-    @State private var selectedPhotoIndex: Int?
 
     private let columns = [
         GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 4)
@@ -21,22 +20,16 @@ struct GalleryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if wearables.capturedPhotos.isEmpty && captureRecords.isEmpty {
+                if captureRecords.isEmpty {
                     ContentUnavailableView(
                         "No Captures",
                         systemImage: "photo.on.rectangle.angled",
-                        description: Text("Connect your glasses and use the camera to capture photos, or sync stored media.")
+                        description: Text("Connect and authenticate with your glasses, then download stored media via SoftAP.")
                     )
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
-                            if !wearables.capturedPhotos.isEmpty {
-                                livePhotosSection
-                            }
-
-                            if !captureRecords.isEmpty {
-                                storedMediaSection
-                            }
+                            storedMediaSection
                         }
                         .padding(4)
                     }
@@ -46,14 +39,6 @@ struct GalleryView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        if wearables.isStreaming {
-                            Button {
-                                _ = wearables.capturePhoto()
-                            } label: {
-                                Label("Take Photo", systemImage: "camera")
-                            }
-                        }
-
                         if !captureRecords.isEmpty {
                             Button {
                                 showExportConfirmation = true
@@ -79,42 +64,6 @@ struct GalleryView: View {
             } message: {
                 Text("Export all downloaded captures to your Photos library?")
             }
-            .sheet(item: $selectedPhotoIndex) { index in
-                photoDetail(index: index)
-            }
-        }
-    }
-
-    // MARK: - Live photos from SDK camera
-
-    private var livePhotosSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Captured This Session")
-                    .font(.headline)
-                    .padding(.horizontal, 8)
-                Spacer()
-                Text("\(wearables.capturedPhotos.count)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-            }
-
-            LazyVGrid(columns: columns, spacing: 4) {
-                ForEach(Array(wearables.capturedPhotos.enumerated()), id: \.offset) { index, photoData in
-                    if let uiImage = UIImage(data: photoData) {
-                        Button {
-                            selectedPhotoIndex = index
-                        } label: {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .aspectRatio(1, contentMode: .fill)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
         }
     }
 
@@ -122,9 +71,16 @@ struct GalleryView: View {
 
     private var storedMediaSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Synced from Glasses")
-                .font(.headline)
-                .padding(.horizontal, 8)
+            HStack {
+                Text("From Glasses")
+                    .font(.headline)
+                    .padding(.horizontal, 8)
+                Spacer()
+                Text("\(captureRecords.count)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+            }
 
             LazyVGrid(columns: columns, spacing: 4) {
                 ForEach(captureRecords, id: \.assetId) { record in
@@ -140,39 +96,34 @@ struct GalleryView: View {
     private func captureTile(_ record: CaptureRecord) -> some View {
         let capture = record.toCapture(baseDirectory: store.mediaDirectory)
 
-        Button {
-            // Future: open detail view
-        } label: {
-            ZStack(alignment: .bottomTrailing) {
-                if let thumbURL = capture.thumbnailURL,
-                   FileManager.default.fileExists(atPath: thumbURL.path) {
-                    AsyncImage(url: thumbURL) { image in
-                        image
-                            .resizable()
-                            .aspectRatio(1, contentMode: .fill)
-                    } placeholder: {
-                        thumbnailPlaceholder(capture)
-                    }
-                } else {
+        ZStack(alignment: .bottomTrailing) {
+            if let thumbURL = capture.thumbnailURL,
+               FileManager.default.fileExists(atPath: thumbURL.path) {
+                AsyncImage(url: thumbURL) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(1, contentMode: .fill)
+                } placeholder: {
                     thumbnailPlaceholder(capture)
                 }
-
-                HStack(spacing: 2) {
-                    Image(systemName: capture.type.systemImage)
-                        .font(.caption2)
-                    if capture.isDownloaded {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                    }
-                }
-                .padding(4)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
-                .padding(4)
+            } else {
+                thumbnailPlaceholder(capture)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: 2) {
+                Image(systemName: capture.type.systemImage)
+                    .font(.caption2)
+                if capture.isDownloaded {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(4)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+            .padding(4)
         }
-        .buttonStyle(.plain)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func thumbnailPlaceholder(_ capture: Capture) -> some View {
@@ -186,41 +137,7 @@ struct GalleryView: View {
             }
     }
 
-    // MARK: - Photo detail
-
-    private func photoDetail(index: Int) -> some View {
-        NavigationStack {
-            if index < wearables.capturedPhotos.count,
-               let uiImage = UIImage(data: wearables.capturedPhotos[index]) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .navigationTitle("Photo \(index + 1)")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                saveToPhotos(wearables.capturedPhotos[index])
-                            } label: {
-                                Image(systemName: "square.and.arrow.down")
-                            }
-                        }
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") {
-                                selectedPhotoIndex = nil
-                            }
-                        }
-                    }
-            }
-        }
-    }
-
     // MARK: - Export
-
-    private func saveToPhotos(_ data: Data) {
-        guard let image = UIImage(data: data) else { return }
-        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-    }
 
     private func exportAll() async {
         let captures = captureRecords.map { $0.toCapture(baseDirectory: store.mediaDirectory) }
@@ -251,8 +168,4 @@ struct GalleryView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .padding(32)
     }
-}
-
-extension Int: @retroactive Identifiable {
-    public var id: Int { self }
 }

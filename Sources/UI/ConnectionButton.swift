@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ConnectionButton: View {
-    @Environment(WearablesManager.self) private var wearables
+    @Environment(GlassesController.self) private var controller
 
     var body: some View {
         Button {
@@ -22,68 +22,66 @@ struct ConnectionButton: View {
 
     @ViewBuilder
     private var connectionIndicator: some View {
-        switch wearables.connectionState {
-        case .unregistered, .error:
+        switch controller.state {
+        case .disconnected, .error:
             Circle()
                 .fill(.secondary)
                 .frame(width: 8, height: 8)
 
-        case .registering, .connecting, .disconnecting:
+        case .scanning, .connecting, .authenticating:
             ProgressView()
                 .controlSize(.mini)
 
-        case .registered:
+        case .connected:
             Circle()
                 .fill(.blue)
                 .frame(width: 8, height: 8)
 
-        case .connected:
+        case .authenticated:
             Circle()
                 .fill(.green)
                 .frame(width: 8, height: 8)
-
-        case .streaming:
-            Image(systemName: "video.circle.fill")
-                .font(.caption2)
-                .foregroundStyle(.green)
         }
     }
 
     // MARK: - Computed
 
     private var statusLabel: String {
-        switch wearables.connectionState {
-        case .unregistered: return "Register"
-        case .registering: return "Registering"
-        case .registered: return "Connect"
+        switch controller.state {
+        case .disconnected: return "Scan"
+        case .scanning: return "Scanning"
         case .connecting: return "Connecting"
         case .connected: return "Connected"
-        case .streaming: return "Live"
-        case .disconnecting: return "Ending"
+        case .authenticating: return "Auth..."
+        case .authenticated: return "Secure"
         case .error: return "Error"
         }
     }
 
     private var statusTint: Color {
-        switch wearables.connectionState {
-        case .unregistered, .error: return .secondary
-        case .registering, .connecting, .disconnecting: return .orange
-        case .registered: return .blue
-        case .connected, .streaming: return .green
+        switch controller.state {
+        case .disconnected, .error: return .secondary
+        case .scanning, .connecting, .authenticating: return .orange
+        case .connected: return .blue
+        case .authenticated: return .green
         }
     }
 
     // MARK: - Action
 
     private func handleTap() {
-        switch wearables.connectionState {
-        case .unregistered, .error:
-            wearables.register()
-        case .registered:
-            wearables.startSession()
-        case .connected, .streaming:
-            wearables.stopSession()
-        case .registering, .connecting, .disconnecting:
+        switch controller.state {
+        case .disconnected, .error:
+            controller.startScan()
+        case .scanning:
+            controller.stopScan()
+        case .connected:
+            if controller.hasIdentity {
+                Task { await controller.authenticate() }
+            }
+        case .authenticated, .authenticating:
+            controller.disconnect()
+        case .connecting:
             break
         }
     }
