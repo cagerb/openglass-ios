@@ -25,6 +25,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private(set) var modelNumber: String?
     private(set) var serialNumber: String?
     private(set) var lastError: String?
+    private(set) var debugLog: [String] = []
 
     // MARK: - Internal
 
@@ -56,6 +57,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     func startScanning() {
         guard centralManager.state == .poweredOn else {
             lastError = "Bluetooth is not powered on."
+            log("Scan aborted — Bluetooth not powered on")
             return
         }
         discoveredPeripherals.removeAll()
@@ -69,13 +71,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
-        logger.info("Started scanning for glasses (unfiltered, name-matched)")
+        log("Scan started (unfiltered, name-matched)")
 
         // Pick up glasses already connected at the iOS system level (they
         // stop advertising once paired, so scanForPeripherals won't find them).
         let alreadyConnected = centralManager.retrieveConnectedPeripherals(
             withServices: [GATTConstants.metaServiceUUID]
         )
+        log("retrieveConnectedPeripherals: \(alreadyConnected.count) found")
         for peripheral in alreadyConnected {
             addDiscoveredPeripheral(peripheral, source: "system-connected")
         }
@@ -87,6 +90,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         let knownIDs = Self.loadKnownPeripheralIDs()
         if !knownIDs.isEmpty {
             let knownPeripherals = centralManager.retrievePeripherals(withIdentifiers: knownIDs)
+            log("retrievePeripherals(withIdentifiers:): \(knownPeripherals.count) of \(knownIDs.count) known IDs found")
             for peripheral in knownPeripherals {
                 addDiscoveredPeripheral(peripheral, source: "known-identifier")
             }
@@ -105,11 +109,11 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         connectionState = .connecting
         connectedPeripheral = peripheral
         peripheral.delegate = self
+        log("Connecting to \(peripheral.name ?? "unknown") [\(peripheral.identifier.uuidString.prefix(8))]")
         centralManager.connect(peripheral, options: [
             CBConnectPeripheralOptionNotifyOnConnectionKey: true,
             CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
         ])
-        logger.info("Connecting to \(peripheral.name ?? "unknown")")
     }
 
     func disconnect() {
@@ -160,6 +164,17 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         return strings.compactMap { UUID(uuidString: $0) }
     }
 
+    /// Append a timestamped entry to the in-app debug log and also log via os.Logger.
+    private func log(_ message: String) {
+        let ts = ISO8601DateFormatter.shared.string(from: Date())
+        let entry = "[\(ts)] \(message)"
+        debugLog.append(entry)
+        if debugLog.count > 50 {
+            debugLog.removeFirst(debugLog.count - 50)
+        }
+        logger.info("\(message)")
+    }
+
     private func cleanup() {
         connectedPeripheral = nil
         dataXCharacteristic = nil
@@ -172,12 +187,9 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     }
 
     private func discoverAllServices() {
-        connectedPeripheral?.discoverServices([
-            GATTConstants.metaServiceUUID,
-            GATTConstants.batteryServiceUUID,
-            GATTConstants.deviceInfoServiceUUID,
-        ])
+        connectedPeripheral?.discoverServices(nil)  // discover ALL services
         connectionState = .discoveringServices
+        log("Discovering ALL services (nil filter)")
     }
 }
 
@@ -186,7 +198,17 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
 extension BluetoothManager: CBCentralManagerDelegate {
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        logger.info("Central state: \(String(describing: central.state.rawValue))")
+        let stateName: String
+        switch central.state {
+        case .unknown: stateName = "unknown"
+        case .resetting: stateName = "resetting"
+        case .unsupported: stateName = "unsupported"
+        case .unauthorized: stateName = "unauthorized"
+        case .poweredOff: stateName = "poweredOff"
+        case .poweredOn: stateName = "poweredOn"
+        @unknown default: stateName = "rawValue(\(central.state.rawValue))"
+        }
+        log("centralManagerDidUpdateState: \(stateName)")
         if central.state != .poweredOn {
             cleanup()
         }
@@ -210,12 +232,13 @@ extension BluetoothManager: CBCentralManagerDelegate {
         // With unfiltered scanning we see every nearby BLE device.
         // Only accept devices whose name starts with the glasses prefix.
         guard !name.isEmpty, name.hasPrefix(GATTConstants.deviceNamePrefix) else { return }
+        log("didDiscover: \(name) RSSI=\(RSSI)")
         addDiscoveredPeripheral(peripheral, source: "scan RSSI=\(RSSI)")
     }
 
     func centralManager(_ central: CBCentralManager,
                          didConnect peripheral: CBPeripheral) {
-        logger.info("Connected to \(peripheral.name ?? "unknown")")
+        log("Connected to \(peripheral.name ?? "unknown"), discovering services...")
         saveKnownPeripheralID(peripheral.identifier)
         discoverAllServices()
     }
@@ -223,17 +246,20 @@ extension BluetoothManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager,
                          didFailToConnect peripheral: CBPeripheral,
                          error: Error?) {
+        let msg = error?.localizedDescription ?? "unknown"
         lastError = error?.localizedDescription ?? "Connection failed."
-        logger.error("Failed to connect: \(error?.localizedDescription ?? "unknown")")
+        log("didFailToConnect: \(msg)")
         cleanup()
     }
 
     func centralManager(_ central: CBCentralManager,
                          didDisconnectPeripheral peripheral: CBPeripheral,
                          error: Error?) {
-        logger.info("Disconnected from \(peripheral.name ?? "unknown")")
         if let error {
+            log("didDisconnectPeripheral: \(error.localizedDescription)")
             lastError = "Disconnected: \(error.localizedDescription)"
+        } else {
+            log("didDisconnectPeripheral: clean disconnect")
         }
         cleanup()
     }
@@ -246,10 +272,15 @@ extension BluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral,
                      didDiscoverServices error: Error?) {
         guard error == nil else {
-            lastError = "Service discovery failed: \(error!.localizedDescription)"
+            let msg = error!.localizedDescription
+            lastError = "Service discovery failed: \(msg)"
+            log("didDiscoverServices ERROR: \(msg)")
             return
         }
-        for service in peripheral.services ?? [] {
+        let services = peripheral.services ?? []
+        log("didDiscoverServices: \(services.count) services")
+        for service in services {
+            log("  service: \(service.uuid.uuidString)")
             switch service.uuid {
             case GATTConstants.metaServiceUUID:
                 peripheral.discoverCharacteristics(
@@ -269,7 +300,7 @@ extension BluetoothManager: CBPeripheralDelegate {
                     for: service
                 )
             default:
-                break
+                peripheral.discoverCharacteristics(nil, for: service)  // discover all chars on unknown services
             }
         }
     }
@@ -277,14 +308,20 @@ extension BluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral,
                      didDiscoverCharacteristicsFor service: CBService,
                      error: Error?) {
-        guard error == nil else { return }
-        for characteristic in service.characteristics ?? [] {
+        if let error {
+            log("didDiscoverCharacteristics ERROR for \(service.uuid): \(error.localizedDescription)")
+            return
+        }
+        let chars = service.characteristics ?? []
+        log("didDiscoverCharacteristics: \(chars.count) chars for service \(service.uuid.uuidString)")
+        for characteristic in chars {
+            log("  char: \(characteristic.uuid.uuidString) (service \(service.uuid.uuidString))")
             switch characteristic.uuid {
             case GATTConstants.dataXCharacteristicUUID:
                 dataXCharacteristic = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
                 connectionState = .connected
-                logger.info("DataX characteristic discovered and subscribed")
+                log("DataX characteristic discovered and subscribed")
 
             case GATTConstants.batteryLevelUUID:
                 peripheral.readValue(for: characteristic)
@@ -304,7 +341,12 @@ extension BluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral,
                      didUpdateValueFor characteristic: CBCharacteristic,
                      error: Error?) {
-        guard error == nil, let value = characteristic.value else { return }
+        if let error {
+            log("didUpdateValue ERROR for \(characteristic.uuid): \(error.localizedDescription)")
+            return
+        }
+        guard let value = characteristic.value else { return }
+        log("didUpdateValue: \(characteristic.uuid.uuidString) (\(value.count) bytes)")
 
         switch characteristic.uuid {
         case GATTConstants.batteryLevelUUID:
@@ -349,4 +391,14 @@ extension BluetoothManager: CBPeripheralDelegate {
             logger.error("Notify state error on \(characteristic.uuid): \(error.localizedDescription)")
         }
     }
+}
+
+// MARK: - ISO8601 formatter (reused for debug timestamps)
+
+private extension ISO8601DateFormatter {
+    nonisolated(unsafe) static let shared: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withTime, .withColonSeparatorInTime]
+        return f
+    }()
 }

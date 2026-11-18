@@ -23,6 +23,8 @@ struct DashboardView: View {
                         batteryCard
                         storageCard
                     }
+
+                    debugLogCard
                 }
                 .padding()
             }
@@ -264,6 +266,50 @@ struct DashboardView: View {
                 .tint(glasses.storageFraction > 0.9 ? .red : .blue)
         }
         .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Debug log
+
+    @State private var debugLogExpanded = true
+
+    private var debugLogCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            DisclosureGroup(isExpanded: $debugLogExpanded) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        if controller.bluetooth.debugLog.isEmpty {
+                            Text("No log entries yet.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 8)
+                        } else {
+                            ForEach(Array(controller.bluetooth.debugLog.enumerated()), id: \.offset) { _, entry in
+                                Text(entry)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .padding(8)
+                }
+                .frame(maxHeight: 300)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "ladybug")
+                        .foregroundStyle(.orange)
+                    Text("Debug Log")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(controller.bluetooth.debugLog.count)")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding()
+        }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
