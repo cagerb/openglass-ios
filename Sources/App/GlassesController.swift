@@ -28,13 +28,14 @@ final class GlassesController {
 
     let bluetooth = BluetoothManager()
     private let sessionCrypto = SessionCrypto()
-    private lazy var authHandshake = AuthHandshake(bluetooth: bluetooth, sessionCrypto: sessionCrypto)
+    private let authHandshake: AuthHandshake
     private let identityStore = IdentityStore()
     private let logger = Logger(subsystem: "com.openglass.app", category: "GlassesController")
 
     // MARK: - Init
 
     init() {
+        authHandshake = AuthHandshake(bluetooth: bluetooth, sessionCrypto: sessionCrypto)
         bluetooth.onDataXMessage = { [weak self] data in
             Task { @MainActor [weak self] in
                 await self?.handleDataXMessage(data)
@@ -45,7 +46,9 @@ final class GlassesController {
     // MARK: - Identity check
 
     func checkIdentity() async {
-        hasIdentity = await identityStore.hasRSAKeyPair() && await identityStore.hasBootstrapTicket()
+        let hasKey = await identityStore.hasRSAKeyPair()
+        let hasTicket = await identityStore.hasBootstrapTicket()
+        hasIdentity = hasKey && hasTicket
     }
 
     // MARK: - Scanning

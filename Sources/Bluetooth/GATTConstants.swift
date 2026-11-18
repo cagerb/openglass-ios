@@ -7,30 +7,30 @@ enum GATTConstants {
 
     /// The proprietary Meta/Facebook service advertised by the glasses.
     /// 16-bit UUID 0xFD5F registered to Facebook, Inc.
-    static let metaServiceUUID = CBUUID(string: "FD5F")
+    nonisolated(unsafe) static let metaServiceUUID = CBUUID(string: "FD5F")
 
     // MARK: - DataX characteristic
 
     /// The main DataX characteristic used for all command/response traffic.
     /// Full 128-bit UUID.
-    static let dataXCharacteristicUUID = CBUUID(string: "24154476-0E45-11AB-6441-E8BE42459478")
+    nonisolated(unsafe) static let dataXCharacteristicUUID = CBUUID(string: "24154476-0E45-11AB-6441-E8BE42459478")
 
     // MARK: - Standard Battery Service (0x180F)
 
-    static let batteryServiceUUID = CBUUID(string: "180F")
+    nonisolated(unsafe) static let batteryServiceUUID = CBUUID(string: "180F")
     /// Battery Level characteristic — returns a single byte 0–100.
-    static let batteryLevelUUID = CBUUID(string: "2A19")
+    nonisolated(unsafe) static let batteryLevelUUID = CBUUID(string: "2A19")
 
     // MARK: - Standard Device Information Service (0x180A)
 
-    static let deviceInfoServiceUUID = CBUUID(string: "180A")
-    static let manufacturerNameUUID = CBUUID(string: "2A29")
-    static let modelNumberUUID = CBUUID(string: "2A24")
-    static let serialNumberUUID = CBUUID(string: "2A25")
-    static let hardwareRevisionUUID = CBUUID(string: "2A27")
-    static let firmwareRevisionUUID = CBUUID(string: "2A26")
-    static let softwareRevisionUUID = CBUUID(string: "2A28")
-    static let systemIDUUID = CBUUID(string: "2A23")
+    nonisolated(unsafe) static let deviceInfoServiceUUID = CBUUID(string: "180A")
+    nonisolated(unsafe) static let manufacturerNameUUID = CBUUID(string: "2A29")
+    nonisolated(unsafe) static let modelNumberUUID = CBUUID(string: "2A24")
+    nonisolated(unsafe) static let serialNumberUUID = CBUUID(string: "2A25")
+    nonisolated(unsafe) static let hardwareRevisionUUID = CBUUID(string: "2A27")
+    nonisolated(unsafe) static let firmwareRevisionUUID = CBUUID(string: "2A26")
+    nonisolated(unsafe) static let softwareRevisionUUID = CBUUID(string: "2A28")
+    nonisolated(unsafe) static let systemIDUUID = CBUUID(string: "2A23")
 
     // MARK: - Device name matching
 
