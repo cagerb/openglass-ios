@@ -65,6 +65,11 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     @ObservationIgnored private var triedPSMs: Set<UInt16> = []
     @ObservationIgnored private var l2capPipe: L2CAPPipe?
     @ObservationIgnored var airShield: AirShieldLink?
+    @ObservationIgnored private var forger: OwnershipForger?
+
+    /// Current phase of the ownership forgery attempt, mirrored for observation.
+    private(set) var forgerPhase: OwnershipForger.Phase = .idle
+    private(set) var forgerFailure: String = ""
 
     /// Maximum number of entries kept in the in-app debug log.
     private static let debugLogLimit = 400
@@ -95,6 +100,21 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
 
     /// Whether the AirShield link is in the secure phase.
     var isAirShieldSecure: Bool { airShield?.phase == .secure }
+
+    /// Start the ownership forgery attempt on the current AirShield link.
+    func startOwnershipForgery() {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else {
+                self?.log("Cannot start forgery: AirShield link is not secure")
+                return
+            }
+            let f = OwnershipForger()
+            f.log = { [weak self] message in self?.log(message) }
+            self.forger = f
+            self.forgerPhase = .waitingForIdentity
+            f.start(link: link)
+        }
+    }
 
     // MARK: - Init
 
@@ -361,6 +381,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             self.log("AirShield link is up. Asking the glasses for their identity (svc36 0x3000)...")
             self.airShield?.requestIdentity()
             self.log("NOTE: no owner key yet, so the trust exchange is skipped and the glasses' services stay closed")
+        }
+        link.onMessage = { [weak self] message in
+            guard let self, let forger = self.forger, forger.phase != .idle && forger.phase != .failed && forger.phase != .succeeded else { return }
+            if message.header.serviceID == AirShieldLink.serviceIdentity || message.header.serviceID == 0 {
+                forger.handleMessage(message, link: link)
+                self.forgerPhase = forger.phase
+                self.forgerFailure = forger.failureReason
+            }
         }
         link.onFailure = { [weak self] reason in
             self?.lastError = "Encrypted link to the glasses failed: \(reason)"

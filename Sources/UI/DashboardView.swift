@@ -21,6 +21,11 @@ struct DashboardView: View {
 
                     if controller.isConnected {
                         deviceInfoCard
+
+                        if controller.bluetooth.isAirShieldSecure {
+                            forgeryCard
+                        }
+
                         batteryCard
                         storageCard
                     }
@@ -268,6 +273,86 @@ struct DashboardView: View {
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Forgery card
+
+    private var forgeryCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "key.horizontal")
+                    .foregroundStyle(.purple)
+                Text("Ownership Forgery")
+                    .font(.headline)
+                Spacer()
+                Text(controller.bluetooth.forgerPhase.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(forgeryPhaseColor)
+            }
+
+            Text("Test whether the glasses verify Meta's receipt signatures. If they don't, we can claim ownership with our own key.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            switch controller.bluetooth.forgerPhase {
+            case .idle:
+                Button {
+                    controller.bluetooth.startOwnershipForgery()
+                } label: {
+                    Label("Attempt Ownership Forgery", systemImage: "lock.open.rotation")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+
+            case .succeeded:
+                HStack {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.title2)
+                    Text("Glasses accepted our forged receipt!")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.green)
+                }
+
+            case .failed:
+                HStack {
+                    Image(systemName: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                        .font(.title2)
+                    VStack(alignment: .leading) {
+                        Text("Forgery rejected")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        if !controller.bluetooth.forgerFailure.isEmpty {
+                            Text(controller.bluetooth.forgerFailure)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+            default:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(controller.bluetooth.forgerPhase.rawValue)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var forgeryPhaseColor: Color {
+        switch controller.bluetooth.forgerPhase {
+        case .idle: return .secondary
+        case .succeeded: return .green
+        case .failed: return .red
+        default: return .purple
+        }
     }
 
     // MARK: - Debug log
