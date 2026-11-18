@@ -68,6 +68,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     @ObservationIgnored var airShield: AirShieldLink?
     @ObservationIgnored private var forger: OwnershipForger?
     @ObservationIgnored private var trustExchange: OwnerTrustExchange?
+    @ObservationIgnored private var changeOwner: ChangeOwnerExchange?
 
     /// Current phase of the ownership forgery attempt, mirrored for observation.
     private(set) var forgerPhase: OwnershipForger.Phase = .idle
@@ -75,6 +76,9 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
 
     private(set) var trustPhase: OwnerTrustExchange.Phase = .idle
     private(set) var trustFailure: String = ""
+
+    private(set) var changeOwnerPhase: ChangeOwnerExchange.Phase = .idle
+    private(set) var changeOwnerFailure: String = ""
 
     @ObservationIgnored private var firmwareManager: FirmwareManager?
     @ObservationIgnored private var mobileConfigManager: MobileConfigManager?
@@ -156,6 +160,21 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             self.trustExchange = exchange
             self.trustPhase = .proving
             exchange.start(link: link, params: params, ownerKey: key)
+        }
+    }
+
+    /// Start the change-owner protocol to claim ownership through Meta's backend.
+    func startChangeOwner(ownerPubkey64: [UInt8], tokens: MetaAuth.Tokens, metaAuth: MetaAuth) {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else {
+                self?.log("Cannot start change-owner: AirShield link is not secure")
+                return
+            }
+            let co = ChangeOwnerExchange()
+            co.log = { [weak self] msg in self?.log(msg) }
+            self.changeOwner = co
+            self.changeOwnerPhase = .requestingIdentity
+            co.start(link: link, ownerPubkey64: ownerPubkey64, tokens: tokens, metaAuth: metaAuth)
         }
     }
 
@@ -472,6 +491,9 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 self.trustExchange = nil
                 self.trustPhase = .idle
                 self.trustFailure = ""
+                self.changeOwner = nil
+                self.changeOwnerPhase = .idle
+                self.changeOwnerFailure = ""
                 self.firmwareManager = nil
                 self.firmwarePhase = .idle
                 self.firmwareFailure = ""
@@ -508,6 +530,15 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         link.onMessage = { [weak self] message in
             guard let self else { return }
             let isSvc36 = message.header.serviceID == AirShieldLink.serviceIdentity || message.header.serviceID == 0
+
+            if let co = self.changeOwner, co.phase != .idle && co.phase != .failed && co.phase != .succeeded {
+                if isSvc36 {
+                    co.handleMessage(message, link: link)
+                    self.changeOwnerPhase = co.phase
+                    self.changeOwnerFailure = co.failureReason
+                }
+                return
+            }
 
             if let trust = self.trustExchange, trust.phase == .proving || trust.phase == .waitingForGlassesPush {
                 if isSvc36 {

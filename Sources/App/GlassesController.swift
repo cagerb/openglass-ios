@@ -34,6 +34,8 @@ final class GlassesController {
     private(set) var firmwareProgress: Double = 0
     private(set) var mobileConfigPhase: MobileConfigManager.Phase = .idle
     private(set) var mobileConfigFailure: String = ""
+    private(set) var changeOwnerPhase: ChangeOwnerExchange.Phase = .idle
+    private(set) var changeOwnerFailure: String = ""
 
     // MARK: - Dependencies
 
@@ -42,6 +44,7 @@ final class GlassesController {
     private let authHandshake: AuthHandshake
     private let identityStore = IdentityStore()
     private let ownerKeyStore = OwnerKeyStore()
+    let metaAuth = MetaAuth()
     private let logger = Logger(subsystem: "com.openglass.app", category: "GlassesController")
 
     // MARK: - Init
@@ -174,6 +177,33 @@ final class GlassesController {
         trustFailure = ""
     }
 
+    // MARK: - Change owner (claim ownership via Meta)
+
+    /// The Meta hardware API app token. The user provides this via settings.
+    var hwAppToken: String {
+        get { UserDefaults.standard.string(forKey: "com.openglass.hwAppToken") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "com.openglass.hwAppToken") }
+    }
+
+    func claimOwnership(authCode: String) async throws {
+        guard bluetooth.isAirShieldSecure else {
+            throw ChangeOwnerError.noLink
+        }
+        guard !hwAppToken.isEmpty else {
+            throw MetaAuthError.serverError("Hardware app token not configured. Set it in Settings.")
+        }
+
+        let serial = bluetooth.serialNumber ?? "unknown"
+        let tokens = try await metaAuth.exchangeCodeForTokens(code: authCode, hwAppToken: hwAppToken)
+        let key = try await ownerKeyStore.generateNewKey(serial: serial)
+        let pubkey64 = Array(key.publicKey.rawRepresentation)
+
+        bluetooth.ownerSigningKey = key
+        hasOwnerKey = true
+        ownerSerial = serial
+        bluetooth.startChangeOwner(ownerPubkey64: pubkey64, tokens: tokens, metaAuth: metaAuth)
+    }
+
     // MARK: - Firmware + MobileConfig
 
     func startFirmwareUpdate(from data: Data) {
@@ -218,6 +248,13 @@ final class GlassesController {
 
         trustPhase = bluetooth.trustPhase
         trustFailure = bluetooth.trustFailure
+        changeOwnerPhase = bluetooth.changeOwnerPhase
+        changeOwnerFailure = bluetooth.changeOwnerFailure
+
+        if changeOwnerPhase == .succeeded && trustPhase == .idle {
+            bluetooth.startTrustExchange()
+        }
+
         firmwarePhase = bluetooth.firmwarePhase
         firmwareFailure = bluetooth.firmwareFailure
         firmwareProgress = bluetooth.firmwareProgress

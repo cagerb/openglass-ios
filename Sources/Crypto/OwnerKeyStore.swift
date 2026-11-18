@@ -61,6 +61,14 @@ actor OwnerKeyStore {
         return hasData(account: Self.privateKeyAccount)
     }
 
+    func generateNewKey(serial: String) throws -> P256.Signing.PrivateKey {
+        let key = P256.Signing.PrivateKey()
+        try saveData(key.rawRepresentation, account: Self.privateKeyAccount)
+        try saveData(Data(serial.utf8), account: Self.serialAccount)
+        logger.info("Generated new owner key for serial \(serial, privacy: .private)")
+        return key
+    }
+
     func deleteOwnerKey() {
         deleteData(account: Self.privateKeyAccount)
         deleteData(account: Self.serialAccount)

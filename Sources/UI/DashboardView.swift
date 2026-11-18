@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import WebKit
 
 struct DashboardView: View {
     @Environment(GlassesController.self) private var controller
@@ -8,6 +9,11 @@ struct DashboardView: View {
     @State private var showingOwnerKeyPicker = false
     @State private var ownerKeyError: String?
     @State private var showingFirmwarePicker = false
+    @State private var isClaimingOwnership = false
+    @State private var claimError: String?
+    @State private var showingTokenInput = false
+    @State private var showingMetaLogin = false
+    @State private var metaLoginURL: URL?
 
     var body: some View {
         NavigationStack {
@@ -86,6 +92,24 @@ struct DashboardView: View {
                         controller.startFirmwareUpdate(from: data)
                     } catch {
                         // File access error — firmware manager logs internally
+                    }
+                }
+            }
+            .sheet(isPresented: $showingMetaLogin) {
+                if let loginURL = metaLoginURL {
+                    MetaLoginSheet(url: loginURL) { code in
+                        showingMetaLogin = false
+                        Task {
+                            do {
+                                try await controller.claimOwnership(authCode: code)
+                            } catch {
+                                claimError = error.localizedDescription
+                            }
+                            isClaimingOwnership = false
+                        }
+                    } onCancel: {
+                        showingMetaLogin = false
+                        isClaimingOwnership = false
                     }
                 }
             }
@@ -369,8 +393,13 @@ struct DashboardView: View {
                     Spacer()
                 }
 
+                // Change-owner progress (when active)
+                if controller.changeOwnerPhase != .idle && controller.changeOwnerPhase != .succeeded {
+                    changeOwnerStatusView
+                }
+
                 switch controller.trustPhase {
-                case .idle:
+                case .idle where controller.changeOwnerPhase == .idle:
                     Text("Trust exchange starts automatically on next secure connection.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -404,11 +433,13 @@ struct DashboardView: View {
                     }
 
                 default:
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(controller.trustPhase.rawValue)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    if controller.trustPhase != .idle {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text(controller.trustPhase.rawValue)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -419,18 +450,50 @@ struct DashboardView: View {
                         .font(.caption)
                 }
             } else {
-                Text("Import the owner key extracted from G-Link Direct to prove ownership and unlock all services.")
+                Text("Claim ownership through your Meta account, or import a key extracted from G-Link Direct.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                // Claim Ownership (Meta OAuth)
                 Button {
-                    showingOwnerKeyPicker = true
+                    startClaimOwnership()
                 } label: {
-                    Label("Import Owner Key", systemImage: "square.and.arrow.down")
+                    Label("Claim Ownership via Meta", systemImage: "person.badge.shield.checkmark.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.green)
+                .tint(.blue)
+                .disabled(isClaimingOwnership)
+
+                if isClaimingOwnership {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Signing in with Meta...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // HW App Token (required for claim)
+                DisclosureGroup("Hardware Token", isExpanded: $showingTokenInput) {
+                    HWTokenField()
+                    Text("Extract from the Meta AI APK or Visor's config. Required for the claim flow.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Divider()
+
+                // Import from G-Link (fallback)
+                Button {
+                    showingOwnerKeyPicker = true
+                } label: {
+                    Label("Import Owner Key from File", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
 
             if let error = ownerKeyError {
@@ -442,9 +505,77 @@ struct DashboardView: View {
                         .foregroundStyle(.red)
                 }
             }
+
+            if let error = claimError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    @ViewBuilder
+    private var changeOwnerStatusView: some View {
+        switch controller.changeOwnerPhase {
+        case .waitingForPress:
+            HStack(spacing: 8) {
+                Image(systemName: "hand.tap.fill")
+                    .foregroundStyle(.orange)
+                    .font(.title2)
+                    .symbolEffect(.pulse)
+                Text("Press the button on your glasses")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.orange)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+
+        case .failed:
+            HStack {
+                Image(systemName: "xmark.octagon.fill")
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading) {
+                    Text("Change-owner failed")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    if !controller.changeOwnerFailure.isEmpty {
+                        Text(controller.changeOwnerFailure)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+        case .idle, .succeeded:
+            EmptyView()
+
+        default:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text(controller.changeOwnerPhase.rawValue)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func startClaimOwnership() {
+        isClaimingOwnership = true
+        claimError = nil
+
+        Task {
+            let url = await controller.metaAuth.loginURL()
+            metaLoginURL = url
+            showingMetaLogin = true
+        }
     }
 
     private var trustPhaseColor: Color {
@@ -822,6 +953,112 @@ struct DashboardView: View {
         case 51...100: return .green
         case 21...50: return .orange
         default: return .red
+        }
+    }
+}
+
+// MARK: - HW token text field (needs @Bindable)
+
+private struct HWTokenField: View {
+    @Environment(GlassesController.self) private var controller
+
+    var body: some View {
+        @Bindable var ctrl = controller
+        TextField("Paste HW app token", text: $ctrl.hwAppToken)
+            .font(.system(.caption, design: .monospaced))
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+    }
+}
+
+// MARK: - Meta OAuth login (WKWebView sheet)
+
+struct MetaLoginSheet: View {
+    let url: URL
+    let onCode: (String) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            MetaWebView(url: url, onCode: onCode)
+                .navigationTitle("Sign in with Meta")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { onCancel() }
+                    }
+                }
+        }
+    }
+}
+
+private struct MetaWebView: UIViewRepresentable {
+    let url: URL
+    let onCode: (String) -> Void
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.load(URLRequest(url: url))
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCode: onCode)
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        let onCode: (String) -> Void
+        private var captured = false
+
+        init(onCode: @escaping (String) -> Void) {
+            self.onCode = onCode
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            if let url = navigationAction.request.url, !captured {
+                if let code = extractCode(from: url) {
+                    captured = true
+                    decisionHandler(.cancel)
+                    DispatchQueue.main.async { self.onCode(code) }
+                    return
+                }
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            if let url = navigationResponse.response.url, !captured {
+                if let code = extractCode(from: url) {
+                    captured = true
+                    decisionHandler(.cancel)
+                    DispatchQueue.main.async { self.onCode(code) }
+                    return
+                }
+            }
+            decisionHandler(.allow)
+        }
+
+        private func extractCode(from url: URL) -> String? {
+            guard url.host == "accounts.meta.com",
+                  url.path.contains("/native/oidc/redirect/"),
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let code = components.queryItems?.first(where: { $0.name == "code" })?.value
+            else { return nil }
+            return code
         }
     }
 }
