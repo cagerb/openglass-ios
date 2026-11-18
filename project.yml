@@ -33,10 +33,10 @@ targets:
         GENERATE_INFOPLIST_FILE: false
         SWIFT_STRICT_CONCURRENCY: complete
     dependencies:
-      - framework: CoreBluetooth.framework
-      - framework: NetworkExtension.framework
-      - framework: CryptoKit.framework
-      - framework: Security.framework
-      - framework: Speech.framework
-      - framework: AVFoundation.framework
-      - framework: Photos.framework
+      - sdk: CoreBluetooth.framework
+      - sdk: NetworkExtension.framework
+      - sdk: CryptoKit.framework
+      - sdk: Security.framework
+      - sdk: Speech.framework
+      - sdk: AVFoundation.framework
+      - sdk: Photos.framework
