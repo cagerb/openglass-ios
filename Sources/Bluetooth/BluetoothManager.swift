@@ -62,6 +62,18 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
         logger.info("Started scanning for glasses (service FD5F)")
+
+        // Pick up glasses already connected at the iOS system level (they
+        // stop advertising once paired, so scanForPeripherals won't find them).
+        let alreadyConnected = centralManager.retrieveConnectedPeripherals(
+            withServices: [GATTConstants.metaServiceUUID]
+        )
+        for peripheral in alreadyConnected {
+            if !discoveredPeripherals.contains(where: { $0.identifier == peripheral.identifier }) {
+                discoveredPeripherals.append(peripheral)
+                logger.info("Found system-connected peripheral: \(peripheral.name ?? "unknown")")
+            }
+        }
     }
 
     func stopScanning() {
