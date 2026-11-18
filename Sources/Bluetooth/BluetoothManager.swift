@@ -153,7 +153,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
                          advertisementData: [String: Any],
                          rssi RSSI: NSNumber) {
         let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
-        guard name.hasPrefix(GATTConstants.deviceNamePrefix) else { return }
+        guard name.isEmpty || name.hasPrefix(GATTConstants.deviceNamePrefix) else { return }
         if !discoveredPeripherals.contains(where: { $0.identifier == peripheral.identifier }) {
             discoveredPeripherals.append(peripheral)
             logger.info("Discovered: \(name) RSSI=\(RSSI)")

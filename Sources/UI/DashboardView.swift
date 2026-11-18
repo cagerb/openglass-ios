@@ -10,7 +10,7 @@ struct DashboardView: View {
                 VStack(spacing: 20) {
                     connectionCard
 
-                    if !controller.hasIdentity && controller.state != .disconnected {
+                    if !controller.hasIdentity && controller.state == .connected {
                         identityWarning
                     }
 
@@ -81,15 +81,13 @@ struct DashboardView: View {
                 .buttonStyle(.bordered)
 
             case .connected:
-                if controller.hasIdentity {
-                    Button {
-                        Task { await controller.authenticate() }
-                    } label: {
-                        Text("Authenticate")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
+                Button {
+                    Task { await controller.authenticate() }
+                } label: {
+                    Text(controller.hasIdentity ? "Authenticate" : "Pair as New Device")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
 
             default:
                 EmptyView()
@@ -120,19 +118,19 @@ struct DashboardView: View {
     private var identityWarning: some View {
         VStack(spacing: 8) {
             HStack {
-                Image(systemName: "key.slash")
-                    .foregroundStyle(.orange)
-                Text("Identity Not Imported")
+                Image(systemName: "key.radiowaves.forward")
+                    .foregroundStyle(.blue)
+                Text("Fresh Pairing Mode")
                     .font(.headline)
             }
 
-            Text("You need to import your glasses identity (RSA key + bootstrap ticket) before you can authenticate. See Settings for the extraction guide.")
+            Text("No existing identity found. Tapping 'Pair as New Device' will generate a fresh RSA key pair and attempt to pair with the glasses.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
         .padding()
-        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+        .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: - Discovered devices
@@ -306,10 +304,10 @@ struct DashboardView: View {
     private var connectionSubtitle: String {
         switch controller.state {
         case .disconnected: return "Scan to find your glasses"
-        case .scanning: return "Looking for Ray-Ban Stories nearby"
+        case .scanning: return "Looking for Ray-Ban glasses nearby"
         case .connecting: return "Establishing BLE connection"
         case .connected where controller.hasIdentity: return "Ready to authenticate"
-        case .connected: return "Import identity to authenticate"
+        case .connected: return "Ready to pair as new device"
         case .authenticating: return "Running PhaseB handshake"
         case .authenticated: return "Full access to glasses"
         case .error: return controller.lastError ?? "Something went wrong"

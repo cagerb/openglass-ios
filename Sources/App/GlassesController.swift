@@ -81,7 +81,7 @@ final class GlassesController {
     // MARK: - Authentication
 
     func authenticate() async {
-        guard state == .connected, hasIdentity else { return }
+        guard state == .connected else { return }
         state = .authenticating
 
         do {

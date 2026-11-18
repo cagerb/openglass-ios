@@ -35,7 +35,7 @@ enum GATTConstants {
     // MARK: - Device name matching
 
     /// The glasses advertise with a local name containing this prefix.
-    static let deviceNamePrefix = "RB Stories"
+    static let deviceNamePrefix = "RB"
 
     // MARK: - Auth message types (PhaseB handshake)
 
