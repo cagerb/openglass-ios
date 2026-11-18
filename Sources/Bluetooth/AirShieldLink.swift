@@ -735,6 +735,22 @@ final class AirShieldLink {
         return true
     }
 
+    /// Send raw plaintext through the AirShield encryption layer, bypassing DataX framing.
+    /// Returns false if the link is not yet secure.
+    func sendRawEncrypted(_ plaintext: [UInt8]) -> Bool {
+        guard phase == .secure, var cipher = txCipher else { return false }
+        do {
+            let sealed = try cipher.seal(plaintext)
+            let frame = [Self.frameData] + sealed
+            send?(frame)
+            txCipher = cipher
+            return true
+        } catch {
+            log?("Raw encrypted send failed: \(error)")
+            return false
+        }
+    }
+
     /// Ask the glasses who they are (svc36 IDENTITY_REQUEST). They answer with their
     /// device certificate and serial before any trust exists, so it proves the cipher works.
     func requestIdentity() {

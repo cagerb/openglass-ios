@@ -16,6 +16,11 @@ struct ContentView: View {
                     Label("Gallery", systemImage: "photo.on.rectangle.angled")
                 }
 
+            StressTesterView()
+                .tabItem {
+                    Label("Tester", systemImage: "bolt.shield")
+                }
+
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gearshape")

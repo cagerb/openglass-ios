@@ -64,7 +64,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     /// PSMs already tried on this connection, so a refused one is not retried forever.
     @ObservationIgnored private var triedPSMs: Set<UInt16> = []
     @ObservationIgnored private var l2capPipe: L2CAPPipe?
-    @ObservationIgnored private var airShield: AirShieldLink?
+    @ObservationIgnored var airShield: AirShieldLink?
 
     /// Maximum number of entries kept in the in-app debug log.
     private static let debugLogLimit = 400
@@ -74,6 +74,27 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
 
     /// Callback for complete reassembled DataX messages.
     var onDataXMessage: ((Data) -> Void)?
+
+    /// Whether the L2CAP channel is currently open.
+    var isL2CAPConnected: Bool { l2capPipe != nil }
+
+    /// Send raw bytes over the L2CAP pipe, bypassing AirShield encryption.
+    func sendRawL2CAP(_ bytes: [UInt8]) {
+        bleQueue.async { [weak self] in
+            self?.l2capPipe?.write(bytes)
+        }
+    }
+
+    /// Send plaintext through the AirShield encryption layer, dispatched to bleQueue.
+    /// Thread-safe wrapper: AirShieldLink is not thread-safe and must be called from bleQueue.
+    func sendRawEncrypted(_ plaintext: [UInt8]) {
+        bleQueue.async { [weak self] in
+            _ = self?.airShield?.sendRawEncrypted(plaintext)
+        }
+    }
+
+    /// Whether the AirShield link is in the secure phase.
+    var isAirShieldSecure: Bool { airShield?.phase == .secure }
 
     // MARK: - Init
 
