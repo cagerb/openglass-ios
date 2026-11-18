@@ -404,7 +404,7 @@ struct DashboardView: View {
                 serviceRow("Status", phase: controller.batteryPercent != nil ? "Active" : "Pending",
                            icon: "heart.text.clipboard", color: controller.batteryPercent != nil ? .green : .orange)
                 serviceRow("Gallery", phase: capturePhaseLabel,
-                           icon: "photo.stack", color: controller.captureListPhase == .done ? .green : .orange)
+                           icon: "photo.stack", color: controller.captureListPhase == .ready ? .green : .orange)
                 serviceRow("Assistant", phase: controller.assistantPhase.rawValue,
                            icon: "brain", color: controller.assistantPhase == .idle ? .green : .blue)
             }
@@ -436,7 +436,7 @@ struct DashboardView: View {
         switch controller.captureListPhase {
         case .idle: return "Idle"
         case .enumerating: return "Loading..."
-        case .done: return "\(controller.captures.count) captures"
+        case .ready: return "\(controller.captures.count) captures"
         case .failed: return "Failed"
         }
     }
@@ -464,7 +464,7 @@ struct DashboardView: View {
             }
 
             if controller.captures.isEmpty {
-                if controller.captureListPhase == .done {
+                if controller.captureListPhase == .ready {
                     Text("No captures on glasses")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
