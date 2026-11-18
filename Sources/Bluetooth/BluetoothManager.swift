@@ -34,6 +34,24 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private var dataXCharacteristic: CBCharacteristic?
     private let dataXLink = DataXLink()
     private let logger = Logger(subsystem: "com.openglass.app", category: "Bluetooth")
+    private let bleQueue = DispatchQueue(label: "com.openglass.ble", qos: .userInitiated)
+
+    // Recovery state for the "FD5F reports 0 characteristics" problem.
+    // Only touched from `bleQueue` (delegate callbacks) and user-initiated connect/disconnect.
+
+    /// Bumped on every connect / cleanup so delayed retries can tell they are stale.
+    @ObservationIgnored private var connectionGeneration = 0
+    /// How many times in a row the Meta service came back with no characteristics.
+    @ObservationIgnored private var metaEmptyCount = 0
+    /// We only force one disconnect + reconnect per user-initiated connection.
+    @ObservationIgnored private var reconnectAttempted = false
+    /// Set while we are deliberately dropping the link to reconnect.
+    @ObservationIgnored private var pendingReconnect: CBPeripheral?
+    /// True when DataX was picked by shape (write + notify) rather than by its known UUID.
+    @ObservationIgnored private var dataXIsFallback = false
+
+    /// Maximum number of entries kept in the in-app debug log.
+    private static let debugLogLimit = 400
 
     /// UserDefaults key for persisting previously-seen peripheral identifiers.
     private static let knownPeripheralIDsKey = "com.openglass.knownPeripheralIDs"
@@ -47,7 +65,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         super.init()
         centralManager = CBCentralManager(
             delegate: self,
-            queue: DispatchQueue(label: "com.openglass.ble", qos: .userInitiated),
+            queue: bleQueue,
             options: [CBCentralManagerOptionRestoreIdentifierKey: "com.openglass.central"]
         )
     }
@@ -106,21 +124,19 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
 
     func connect(to peripheral: CBPeripheral) {
         stopScanning()
-        connectionState = .connecting
-        connectedPeripheral = peripheral
-        peripheral.delegate = self
-        log("Connecting to \(peripheral.name ?? "unknown") [\(peripheral.identifier.uuidString.prefix(8))]")
-        centralManager.connect(peripheral, options: [
-            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
-            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
-        ])
+        metaEmptyCount = 0
+        reconnectAttempted = false
+        pendingReconnect = nil
+        startConnection(to: peripheral)
     }
 
     func disconnect() {
-        if let peripheral = connectedPeripheral {
+        let peripheral = connectedPeripheral
+        // cleanup() first so the disconnect callback is not mistaken for a planned reconnect.
+        cleanup()
+        if let peripheral {
             centralManager.cancelPeripheralConnection(peripheral)
         }
-        cleanup()
     }
 
     /// Send a raw DataX message (will be framed and chunked automatically).
@@ -131,9 +147,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             return
         }
 
-        let frames = dataXLink.frame(type: type, payload: payload, mtu: peripheral.maximumWriteValueLength(for: .withResponse))
+        // Prefer write-with-response; fall back if the characteristic only allows write-without-response.
+        let writeType: CBCharacteristicWriteType =
+            characteristic.properties.contains(.write) ? .withResponse : .withoutResponse
+        let frames = dataXLink.frame(type: type, payload: payload, mtu: peripheral.maximumWriteValueLength(for: writeType))
+        let typeHex = String(format: "%02x", type)
+        log("DataX TX type=0x\(typeHex) payload=\(payload.count) bytes in \(frames.count) write(s)")
         for frame in frames {
-            peripheral.writeValue(frame, for: characteristic, type: .withResponse)
+            peripheral.writeValue(frame, for: characteristic, type: writeType)
         }
     }
 
@@ -165,17 +186,26 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     }
 
     /// Append a timestamped entry to the in-app debug log and also log via os.Logger.
+    /// The array itself is only mutated on the main queue, where SwiftUI reads it.
     private func log(_ message: String) {
         let ts = ISO8601DateFormatter.shared.string(from: Date())
         let entry = "[\(ts)] \(message)"
-        debugLog.append(entry)
-        if debugLog.count > 50 {
-            debugLog.removeFirst(debugLog.count - 50)
-        }
         logger.info("\(message)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.debugLog.append(entry)
+            if self.debugLog.count > Self.debugLogLimit {
+                self.debugLog.removeFirst(self.debugLog.count - Self.debugLogLimit)
+            }
+        }
     }
 
     private func cleanup() {
+        connectionGeneration += 1
+        metaEmptyCount = 0
+        reconnectAttempted = false
+        pendingReconnect = nil
+        dataXIsFallback = false
         connectedPeripheral = nil
         dataXCharacteristic = nil
         batteryLevel = nil
@@ -186,10 +216,209 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         dataXLink.reset()
     }
 
+    private func startConnection(to peripheral: CBPeripheral) {
+        connectionGeneration += 1
+        connectionState = .connecting
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        log("Connecting to \(peripheral.name ?? "unknown") [\(peripheral.identifier.uuidString.prefix(8))]")
+        centralManager.connect(peripheral, options: [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+        ])
+    }
+
     private func discoverAllServices() {
         connectedPeripheral?.discoverServices(nil)  // discover ALL services
         connectionState = .discoveringServices
         log("Discovering ALL services (nil filter)")
+    }
+
+    // MARK: - DataX characteristic selection
+
+    /// Pick the DataX characteristic out of everything the Meta service exposes.
+    ///
+    /// The known Stories gen 1 UUID wins. If it is absent we fall back to the first
+    /// write + notify characteristic on the service, which is what the DataX channel
+    /// looks like on the wire, and say so loudly in the log.
+    private func selectDataXCharacteristic(from chars: [CBCharacteristic], on peripheral: CBPeripheral) {
+        let chosen: CBCharacteristic
+        if let exact = chars.first(where: { $0.uuid == GATTConstants.dataXCharacteristicUUID }) {
+            chosen = exact
+            dataXIsFallback = false
+            log("DataX characteristic found by UUID")
+        } else if let candidate = chars.first(where: { Self.isWriteAndNotify($0) }) {
+            chosen = candidate
+            dataXIsFallback = true
+            log("DataX UUID \(GATTConstants.dataXCharacteristicUUID.uuidString) is NOT on FD5F")
+            log("FALLBACK: using first write+notify char \(candidate.uuid.uuidString) as DataX (unverified)")
+        } else {
+            log("FD5F has \(chars.count) chars but none is write+notify, so no DataX candidate")
+            lastError = "Glasses service found, but no usable DataX characteristic. See the debug log."
+            return
+        }
+
+        dataXCharacteristic = chosen
+        if chosen.properties.contains(.notify) || chosen.properties.contains(.indicate) {
+            // .connected is set once the subscription is confirmed (didUpdateNotificationState).
+            // If the CCCD needs an encrypted link, this write is what makes iOS pair.
+            log("Subscribing to DataX \(chosen.uuid.uuidString)...")
+            peripheral.setNotifyValue(true, for: chosen)
+        } else {
+            log("DataX has no notify/indicate property, marking connected without subscribing")
+            connectionState = .connected
+        }
+    }
+
+    private func isDataX(_ characteristic: CBCharacteristic) -> Bool {
+        guard let dataX = dataXCharacteristic else { return false }
+        return characteristic === dataX
+            || (characteristic.uuid == dataX.uuid && characteristic.service?.uuid == dataX.service?.uuid)
+    }
+
+    // MARK: - Empty Meta service recovery
+
+    /// Called whenever FD5F comes back with no characteristics (or is missing altogether).
+    ///
+    /// Ladder: re-discover the characteristics after a pause, then re-discover every
+    /// service, then drop the link once and reconnect so iOS re-reads the GATT table
+    /// (CoreBluetooth answers repeat discoveries from its per-connection cache, so only
+    /// a new connection is guaranteed to go back over the air). After that, give up and
+    /// explain, but keep the link up so a Service Changed indication can still rescue us.
+    private func handleMetaServiceEmpty(_ what: String) {
+        metaEmptyCount += 1
+        let generation = connectionGeneration
+        log("\(what) (empty result #\(metaEmptyCount)\(reconnectAttempted ? ", after reconnect" : ""))")
+
+        if !reconnectAttempted {
+            switch metaEmptyCount {
+            case 1:
+                log("Retry 1: re-discovering FD5F characteristics in 1.5 s")
+                scheduleMetaCharacteristicRediscovery(after: 1.5, generation: generation)
+            case 2:
+                log("Retry 2: re-discovering ALL services in 2 s")
+                bleQueue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self, self.connectionGeneration == generation,
+                          let peripheral = self.connectedPeripheral,
+                          peripheral.state == .connected else { return }
+                    self.log("Re-discovering ALL services now")
+                    peripheral.discoverServices(nil)
+                }
+            default:
+                reconnectForFreshGATT()
+            }
+        } else if metaEmptyCount == 1 {
+            log("Retry after reconnect: re-discovering FD5F characteristics in 2 s")
+            scheduleMetaCharacteristicRediscovery(after: 2.0, generation: generation)
+        } else {
+            reportMetaServiceStillEmpty()
+        }
+    }
+
+    private func scheduleMetaCharacteristicRediscovery(after delay: TimeInterval, generation: Int) {
+        bleQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.connectionGeneration == generation,
+                  let peripheral = self.connectedPeripheral,
+                  peripheral.state == .connected else { return }
+            if let service = peripheral.services?.first(where: { $0.uuid == GATTConstants.metaServiceUUID }) {
+                self.log("Re-discovering FD5F characteristics now (nil filter)")
+                peripheral.discoverCharacteristics(nil, for: service)
+            } else {
+                self.log("FD5F not in the service list, re-discovering ALL services instead")
+                peripheral.discoverServices(nil)
+            }
+        }
+    }
+
+    /// Drop the BLE link once and connect again so the GATT table is read fresh.
+    private func reconnectForFreshGATT() {
+        guard let peripheral = connectedPeripheral else { return }
+        reconnectAttempted = true
+        metaEmptyCount = 0
+        pendingReconnect = peripheral
+        dataXCharacteristic = nil
+        dataXLink.reset()
+        connectionState = .connecting
+        log("Retry 3: disconnecting and reconnecting to force a fresh GATT read")
+        centralManager.cancelPeripheralConnection(peripheral)
+    }
+
+    private func reportMetaServiceStillEmpty() {
+        log("GAVE UP: FD5F still has no characteristics after retries + reconnect")
+        log("Discovery was UNFILTERED, so this is not a wrong-UUID problem:")
+        log("the glasses (or the iOS GATT cache) list nothing under FD5F on this link.")
+        log("Try 1: Settings > Bluetooth OFF then ON (flushes the iOS GATT cache), reconnect")
+        log("Try 2: Forget the glasses in Settings > Bluetooth, pairing mode again, connect from OpenGlass FIRST")
+        log("Try 3: open the glasses in nRF Connect and compare what it lists under FD5F")
+        log("Link left open: still listening for Service Changed (didModifyServices)")
+        lastError = "Connected, but the glasses list no characteristics on their Meta service (FD5F). See the debug log for what to try."
+    }
+
+    // MARK: - Log formatting helpers
+
+    private static func isWriteAndNotify(_ characteristic: CBCharacteristic) -> Bool {
+        let p = characteristic.properties
+        let writable = p.contains(.write) || p.contains(.writeWithoutResponse)
+        let notifiable = p.contains(.notify) || p.contains(.indicate)
+        return writable && notifiable
+    }
+
+    private static func describe(properties: CBCharacteristicProperties) -> String {
+        var names: [String] = []
+        if properties.contains(.broadcast) { names.append("broadcast") }
+        if properties.contains(.read) { names.append("read") }
+        if properties.contains(.writeWithoutResponse) { names.append("writeNoRsp") }
+        if properties.contains(.write) { names.append("write") }
+        if properties.contains(.notify) { names.append("notify") }
+        if properties.contains(.indicate) { names.append("indicate") }
+        if properties.contains(.authenticatedSignedWrites) { names.append("signedWrite") }
+        if properties.contains(.extendedProperties) { names.append("extended") }
+        if properties.contains(.notifyEncryptionRequired) { names.append("notifyEncRequired") }
+        if properties.contains(.indicateEncryptionRequired) { names.append("indicateEncRequired") }
+        return "[" + names.joined(separator: ",") + "] raw=0x" + String(properties.rawValue, radix: 16)
+    }
+
+    /// Error text plus domain/code, with a note when the error is the kind that starts BLE pairing.
+    private static func describe(error: Error) -> String {
+        let ns = error as NSError
+        var text = "\(ns.localizedDescription) [\(ns.domain) \(ns.code)]"
+        if ns.domain == CBATTErrorDomain {
+            switch ns.code {
+            case CBATTError.Code.insufficientAuthentication.rawValue,
+                 CBATTError.Code.insufficientEncryption.rawValue,
+                 CBATTError.Code.insufficientAuthorization.rawValue,
+                 CBATTError.Code.insufficientEncryptionKeySize.rawValue:
+                text += " <- link security required: iOS should offer to pair; accept, then reconnect"
+            default:
+                break
+            }
+        }
+        return text
+    }
+
+    private static func hex(_ data: Data, limit: Int = 40) -> String {
+        let shown = data.prefix(limit).map { String(format: "%02x", $0) }.joined()
+        return data.count > limit ? shown + "...(+\(data.count - limit))" : shown
+    }
+
+    /// One-line summary of an advertisement, for working out what state the glasses are in.
+    private static func describe(advertisement: [String: Any]) -> String {
+        var parts: [String] = []
+        if let uuids = advertisement[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID], !uuids.isEmpty {
+            parts.append("svc=" + uuids.map { $0.uuidString }.joined(separator: ","))
+        }
+        if let serviceData = advertisement[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data] {
+            for (uuid, data) in serviceData {
+                parts.append("svcData[\(uuid.uuidString)]=\(hex(data))")
+            }
+        }
+        if let manufacturer = advertisement[CBAdvertisementDataManufacturerDataKey] as? Data {
+            parts.append("mfg=\(hex(manufacturer))")
+        }
+        if let connectable = advertisement[CBAdvertisementDataIsConnectable] as? NSNumber {
+            parts.append("connectable=\(connectable.boolValue)")
+        }
+        return parts.isEmpty ? "(no adv fields)" : parts.joined(separator: " ")
     }
 }
 
@@ -233,12 +462,16 @@ extension BluetoothManager: CBCentralManagerDelegate {
         // Only accept devices whose name starts with the glasses prefix.
         guard !name.isEmpty, name.hasPrefix(GATTConstants.deviceNamePrefix) else { return }
         log("didDiscover: \(name) RSSI=\(RSSI)")
+        log("  adv: \(Self.describe(advertisement: advertisementData))")
         addDiscoveredPeripheral(peripheral, source: "scan RSSI=\(RSSI)")
     }
 
     func centralManager(_ central: CBCentralManager,
                          didConnect peripheral: CBPeripheral) {
         log("Connected to \(peripheral.name ?? "unknown"), discovering services...")
+        let withRsp = peripheral.maximumWriteValueLength(for: .withResponse)
+        let withoutRsp = peripheral.maximumWriteValueLength(for: .withoutResponse)
+        log("  max write: \(withRsp) with rsp / \(withoutRsp) without rsp")
         saveKnownPeripheralID(peripheral.identifier)
         discoverAllServices()
     }
@@ -246,7 +479,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager,
                          didFailToConnect peripheral: CBPeripheral,
                          error: Error?) {
-        let msg = error?.localizedDescription ?? "unknown"
+        let msg = error.map { Self.describe(error: $0) } ?? "unknown"
         lastError = error?.localizedDescription ?? "Connection failed."
         log("didFailToConnect: \(msg)")
         cleanup()
@@ -255,8 +488,21 @@ extension BluetoothManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager,
                          didDisconnectPeripheral peripheral: CBPeripheral,
                          error: Error?) {
+        if let pending = pendingReconnect, pending.identifier == peripheral.identifier {
+            // Planned drop: connect again so iOS re-reads the GATT table.
+            pendingReconnect = nil
+            connectionGeneration += 1
+            let generation = connectionGeneration
+            log("didDisconnectPeripheral: planned drop done, reconnecting in 1 s")
+            bleQueue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self, self.connectionGeneration == generation,
+                      let target = self.connectedPeripheral else { return }
+                self.startConnection(to: target)
+            }
+            return
+        }
         if let error {
-            log("didDisconnectPeripheral: \(error.localizedDescription)")
+            log("didDisconnectPeripheral: \(Self.describe(error: error))")
             lastError = "Disconnected: \(error.localizedDescription)"
         } else {
             log("didDisconnectPeripheral: clean disconnect")
@@ -271,37 +517,22 @@ extension BluetoothManager: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral,
                      didDiscoverServices error: Error?) {
-        guard error == nil else {
-            let msg = error!.localizedDescription
-            lastError = "Service discovery failed: \(msg)"
-            log("didDiscoverServices ERROR: \(msg)")
+        if let error {
+            lastError = "Service discovery failed: \(error.localizedDescription)"
+            log("didDiscoverServices ERROR: \(Self.describe(error: error))")
             return
         }
         let services = peripheral.services ?? []
         log("didDiscoverServices: \(services.count) services")
         for service in services {
-            log("  service: \(service.uuid.uuidString)")
-            switch service.uuid {
-            case GATTConstants.metaServiceUUID:
-                peripheral.discoverCharacteristics(
-                    [GATTConstants.dataXCharacteristicUUID],
-                    for: service
-                )
-            case GATTConstants.batteryServiceUUID:
-                peripheral.discoverCharacteristics(
-                    [GATTConstants.batteryLevelUUID],
-                    for: service
-                )
-            case GATTConstants.deviceInfoServiceUUID:
-                peripheral.discoverCharacteristics(
-                    [GATTConstants.firmwareRevisionUUID,
-                     GATTConstants.modelNumberUUID,
-                     GATTConstants.serialNumberUUID],
-                    for: service
-                )
-            default:
-                peripheral.discoverCharacteristics(nil, for: service)  // discover all chars on unknown services
-            }
+            log("  service: \(service.uuid.uuidString) primary=\(service.isPrimary)")
+            // Always discover with a nil filter. A UUID filter makes CoreBluetooth hide
+            // every characteristic that does not match, so "0 chars" from a filtered call
+            // cannot tell "nothing there" apart from "something there under another UUID".
+            peripheral.discoverCharacteristics(nil, for: service)
+        }
+        if !services.contains(where: { $0.uuid == GATTConstants.metaServiceUUID }) {
+            handleMetaServiceEmpty("Meta service FD5F is not in the service list")
         }
     }
 
@@ -309,44 +540,102 @@ extension BluetoothManager: CBPeripheralDelegate {
                      didDiscoverCharacteristicsFor service: CBService,
                      error: Error?) {
         if let error {
-            log("didDiscoverCharacteristics ERROR for \(service.uuid): \(error.localizedDescription)")
+            log("didDiscoverCharacteristics ERROR for \(service.uuid.uuidString): \(Self.describe(error: error))")
             return
         }
         let chars = service.characteristics ?? []
-        log("didDiscoverCharacteristics: \(chars.count) chars for service \(service.uuid.uuidString)")
+        let isMetaService = service.uuid == GATTConstants.metaServiceUUID
+        log("didDiscoverCharacteristics: \(chars.count) chars for service \(service.uuid.uuidString) (unfiltered)")
         for characteristic in chars {
-            log("  char: \(characteristic.uuid.uuidString) (service \(service.uuid.uuidString))")
-            switch characteristic.uuid {
-            case GATTConstants.dataXCharacteristicUUID:
-                dataXCharacteristic = characteristic
-                peripheral.setNotifyValue(true, for: characteristic)
-                connectionState = .connected
-                log("DataX characteristic discovered and subscribed")
+            log("  char: \(characteristic.uuid.uuidString) \(Self.describe(properties: characteristic.properties))")
+        }
 
-            case GATTConstants.batteryLevelUUID:
-                peripheral.readValue(for: characteristic)
-                peripheral.setNotifyValue(true, for: characteristic)
-
-            case GATTConstants.firmwareRevisionUUID,
-                 GATTConstants.modelNumberUUID,
-                 GATTConstants.serialNumberUUID:
-                peripheral.readValue(for: characteristic)
-
-            default:
-                break
+        if isMetaService {
+            if chars.isEmpty {
+                handleMetaServiceEmpty("FD5F returned 0 characteristics")
+                return
+            }
+            metaEmptyCount = 0
+            let current = dataXCharacteristic
+            if current == nil || !chars.contains(where: { $0 === current }) {
+                selectDataXCharacteristic(from: chars, on: peripheral)
             }
         }
+
+        for characteristic in chars {
+            if isMetaService {
+                // Map the whole proprietary service: descriptors, readable values, and
+                // every notify source. Any of these that needs an encrypted link is also
+                // what makes iOS start pairing, since CoreBluetooth has no explicit bond call.
+                peripheral.discoverDescriptors(for: characteristic)
+                let canNotify = characteristic.properties.contains(.notify)
+                    || characteristic.properties.contains(.indicate)
+                if canNotify && !isDataX(characteristic) {
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
+            }
+            if characteristic.properties.contains(.read) {
+                peripheral.readValue(for: characteristic)
+            }
+            if characteristic.uuid == GATTConstants.batteryLevelUUID {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                     didDiscoverDescriptorsFor characteristic: CBCharacteristic,
+                     error: Error?) {
+        if let error {
+            log("didDiscoverDescriptors ERROR for \(characteristic.uuid.uuidString): \(Self.describe(error: error))")
+            return
+        }
+        let descriptors = (characteristic.descriptors ?? []).map { $0.uuid.uuidString }
+        let list = descriptors.isEmpty ? "none" : descriptors.joined(separator: ",")
+        log("  descriptors for \(characteristic.uuid.uuidString): \(list)")
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                     didModifyServices invalidatedServices: [CBService]) {
+        // The glasses changed their GATT table (Service Changed). This is how a service
+        // that was empty before pairing / unlock would announce its characteristics.
+        let names = invalidatedServices.map { $0.uuid.uuidString }.joined(separator: ",")
+        log("didModifyServices: invalidated [\(names)], re-discovering ALL services")
+        if let dataX = dataXCharacteristic,
+           invalidatedServices.contains(where: { $0.uuid == dataX.service?.uuid }) {
+            dataXCharacteristic = nil
+            dataXLink.reset()
+            if connectionState == .connected || connectionState == .authenticated {
+                connectionState = .discoveringServices
+            }
+        }
+        metaEmptyCount = 0
+        peripheral.discoverServices(nil)
+    }
+
+    func peripheralDidUpdateName(_ peripheral: CBPeripheral) {
+        log("peripheralDidUpdateName: \(peripheral.name ?? "nil")")
     }
 
     func peripheral(_ peripheral: CBPeripheral,
                      didUpdateValueFor characteristic: CBCharacteristic,
                      error: Error?) {
         if let error {
-            log("didUpdateValue ERROR for \(characteristic.uuid): \(error.localizedDescription)")
+            log("didUpdateValue ERROR for \(characteristic.uuid.uuidString): \(Self.describe(error: error))")
             return
         }
         guard let value = characteristic.value else { return }
-        log("didUpdateValue: \(characteristic.uuid.uuidString) (\(value.count) bytes)")
+
+        if isDataX(characteristic) {
+            log("DataX RX \(value.count) bytes: \(Self.hex(value, limit: 16))")
+            if let message = dataXLink.receive(data: value) {
+                logger.debug("DataX message received, \(message.count) bytes")
+                onDataXMessage?(message)
+            }
+            return
+        }
+
+        log("didUpdateValue: \(characteristic.uuid.uuidString) (\(value.count) bytes) \(Self.hex(value))")
 
         switch characteristic.uuid {
         case GATTConstants.batteryLevelUUID:
@@ -364,12 +653,6 @@ extension BluetoothManager: CBPeripheralDelegate {
         case GATTConstants.serialNumberUUID:
             serialNumber = String(data: value, encoding: .utf8)
 
-        case GATTConstants.dataXCharacteristicUUID:
-            if let message = dataXLink.receive(data: value) {
-                logger.debug("DataX message received, \(message.count) bytes")
-                onDataXMessage?(message)
-            }
-
         default:
             break
         }
@@ -379,7 +662,7 @@ extension BluetoothManager: CBPeripheralDelegate {
                      didWriteValueFor characteristic: CBCharacteristic,
                      error: Error?) {
         if let error {
-            logger.error("Write failed: \(error.localizedDescription)")
+            log("Write FAILED on \(characteristic.uuid.uuidString): \(Self.describe(error: error))")
             lastError = "Write failed: \(error.localizedDescription)"
         }
     }
@@ -387,8 +670,20 @@ extension BluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral,
                      didUpdateNotificationStateFor characteristic: CBCharacteristic,
                      error: Error?) {
+        let forDataX = isDataX(characteristic)
+        let tag = forDataX ? " (DataX)" : ""
         if let error {
-            logger.error("Notify state error on \(characteristic.uuid): \(error.localizedDescription)")
+            log("Subscribe FAILED on \(characteristic.uuid.uuidString)\(tag): \(Self.describe(error: error))")
+            if forDataX {
+                lastError = "Could not subscribe to the glasses' data channel: \(error.localizedDescription)"
+            }
+            return
+        }
+        log("Notify \(characteristic.isNotifying ? "ON" : "OFF") for \(characteristic.uuid.uuidString)\(tag)")
+        if forDataX && characteristic.isNotifying
+            && (connectionState == .discoveringServices || connectionState == .connecting) {
+            connectionState = .connected
+            log("DataX ready\(dataXIsFallback ? " (FALLBACK characteristic, unverified)" : ""), link is up")
         }
     }
 }

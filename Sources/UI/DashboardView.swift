@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct DashboardView: View {
     @Environment(GlassesController.self) private var controller
@@ -276,6 +277,17 @@ struct DashboardView: View {
     private var debugLogCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             DisclosureGroup(isExpanded: $debugLogExpanded) {
+                Button {
+                    UIPasteboard.general.string = controller.bluetooth.debugLog.joined(separator: "\n")
+                } label: {
+                    Label("Copy log", systemImage: "doc.on.doc")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.bordered)
+                .disabled(controller.bluetooth.debugLog.isEmpty)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 8)
+
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         if controller.bluetooth.debugLog.isEmpty {
