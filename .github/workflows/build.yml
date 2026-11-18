@@ -11,16 +11,13 @@ jobs:
   check:
     name: Swift Compile Check
     runs-on: ubuntu-24.04
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Swift
         uses: swift-actions/setup-swift@v2
         with:
           swift-version: "5.10"
-
       - name: Check syntax (all .swift files)
         run: |
           echo "Checking Swift files for syntax errors..."
@@ -29,7 +26,6 @@ jobs:
             swiftc -parse "$f" 2>&1 || true
           done
           echo "Syntax check complete."
-
       - name: Count lines of code
         run: |
           echo "Swift files:"
@@ -37,44 +33,75 @@ jobs:
           echo "Total lines:"
           find Sources -name '*.swift' -exec cat {} + | wc -l
 
-  # Full iOS build — uncomment when macOS runner minutes are available
-  # build:
-  #   name: Build OpenGlass
-  #   runs-on: macos-14
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #     - name: Select Xcode 15.4
-  #       run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
-  #     - name: Install XcodeGen
-  #       run: brew install xcodegen
-  #     - name: Generate Xcode project
-  #       run: xcodegen generate
-  #     - name: Build archive (unsigned)
-  #       run: |
-  #         xcodebuild archive \
-  #           -project OpenGlass.xcodeproj \
-  #           -scheme OpenGlass \
-  #           -configuration Release \
-  #           -archivePath build/OpenGlass.xcarchive \
-  #           -destination "generic/platform=iOS" \
-  #           CODE_SIGN_IDENTITY="" \
-  #           CODE_SIGNING_REQUIRED=NO \
-  #           CODE_SIGNING_ALLOWED=NO \
-  #           DEVELOPMENT_TEAM="" \
-  #           AD_HOC_CODE_SIGNING_ALLOWED=YES \
-  #           | xcpretty
-  #     - name: Export .ipa (unsigned)
-  #       run: |
-  #         mkdir -p build/ipa
-  #         cd build/OpenGlass.xcarchive/Products/Applications
-  #         mkdir -p Payload
-  #         cp -r OpenGlass.app Payload/
-  #         zip -r ../../../ipa/OpenGlass-unsigned.ipa Payload
-  #         cd ../../../..
-  #     - name: Upload .ipa artifact
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: OpenGlass-unsigned
-  #         path: build/ipa/OpenGlass-unsigned.ipa
-  #         retention-days: 30
+  build:
+    name: Build OpenGlass IPA
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -n 1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos || { echo 'no iphoneos SDK in this Xcode'; exit 1; }
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Archive (unsigned)
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild -project OpenGlass.xcodeproj \
+            -scheme OpenGlass \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/OpenGlass.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build/xcodebuild.log
+
+      - name: Package IPA
+        run: |
+          set -e
+          rm -rf Payload OpenGlass.ipa
+          mkdir Payload
+          cp -R build/OpenGlass.xcarchive/Products/Applications/OpenGlass.app Payload/
+          zip -r -y OpenGlass.ipa Payload
+
+      - name: Verify IPA contents
+        run: |
+          set -e
+          APP=Payload/OpenGlass.app
+          test -f "$APP/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist")
+          test -f "$APP/$EXE"
+          echo "Bundle id: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          echo "Version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist") ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"))"
+          ls -l OpenGlass.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenGlass-ipa
+          path: OpenGlass.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
