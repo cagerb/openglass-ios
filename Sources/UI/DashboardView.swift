@@ -474,12 +474,17 @@ struct DashboardView: View {
                     }
                 }
 
-                // HW App Token (required for claim)
-                DisclosureGroup("Hardware Token", isExpanded: $showingTokenInput) {
-                    HWTokenField()
-                    Text("Extract from the Meta AI APK or Visor's config. Required for the claim flow.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                // App tokens (required for claim)
+                DisclosureGroup("App Tokens", isExpanded: $showingTokenInput) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("AR Token").font(.caption2).foregroundStyle(.secondary)
+                        ARTokenField()
+                        Text("HW Token").font(.caption2).foregroundStyle(.secondary)
+                        HWTokenField()
+                        Text("Extract VISOR_META_AR_TOKEN and VISOR_META_HW_TOKEN from Visor's local.properties or the Meta AI APK.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -957,7 +962,7 @@ struct DashboardView: View {
     }
 }
 
-// MARK: - HW token text field (needs @Bindable)
+// MARK: - App token text fields (needs @Bindable)
 
 private struct HWTokenField: View {
     @Environment(GlassesController.self) private var controller
@@ -965,6 +970,19 @@ private struct HWTokenField: View {
     var body: some View {
         @Bindable var ctrl = controller
         TextField("Paste HW app token", text: $ctrl.hwAppToken)
+            .font(.system(.caption, design: .monospaced))
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+    }
+}
+
+private struct ARTokenField: View {
+    @Environment(GlassesController.self) private var controller
+
+    var body: some View {
+        @Bindable var ctrl = controller
+        TextField("Paste AR app token", text: $ctrl.arAppToken)
             .font(.system(.caption, design: .monospaced))
             .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()

@@ -179,10 +179,16 @@ final class GlassesController {
 
     // MARK: - Change owner (claim ownership via Meta)
 
-    /// The Meta hardware API app token. The user provides this via settings.
+    /// The Meta hardware graph app token (VISOR_META_HW_TOKEN).
     var hwAppToken: String {
         get { UserDefaults.standard.string(forKey: "com.openglass.hwAppToken") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "com.openglass.hwAppToken") }
+    }
+
+    /// The Meta AR graph app token (VISOR_META_AR_TOKEN).
+    var arAppToken: String {
+        get { UserDefaults.standard.string(forKey: "com.openglass.arAppToken") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "com.openglass.arAppToken") }
     }
 
     func claimOwnership(authCode: String) async throws {
@@ -190,11 +196,14 @@ final class GlassesController {
             throw ChangeOwnerError.noLink
         }
         guard !hwAppToken.isEmpty else {
-            throw MetaAuthError.serverError("Hardware app token not configured. Set it in Settings.")
+            throw MetaAuthError.serverError("HW app token not set. Extract VISOR_META_HW_TOKEN from Visor or the Meta AI APK.")
+        }
+        guard !arAppToken.isEmpty else {
+            throw MetaAuthError.serverError("AR app token not set. Extract VISOR_META_AR_TOKEN from Visor or the Meta AI APK.")
         }
 
         let serial = bluetooth.serialNumber ?? "unknown"
-        let tokens = try await metaAuth.exchangeCodeForTokens(code: authCode, hwAppToken: hwAppToken)
+        let tokens = try await metaAuth.exchangeCodeForTokens(code: authCode, arAppToken: arAppToken, hwAppToken: hwAppToken)
         let key = try await ownerKeyStore.generateNewKey(serial: serial)
         let pubkey64 = Array(key.publicKey.rawRepresentation)
 

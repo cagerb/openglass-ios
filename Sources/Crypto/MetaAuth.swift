@@ -25,10 +25,12 @@ actor MetaAuth {
     private static let arLoginURL = "https://ar.graph.meta.com/login"
     private static let hwGraphBase = "https://graph.facebook-hardware.com"
     private static let pairProtocolVersion = "4"
+    private static let metaUserAgent = "Dalvik/2.1.0 (Linux; U; Android 15) [FBAN/Stella;FBAV/289.0.0.25.162;FBSN/Android;FBSV/15;FBLC/en_US]"
 
     struct Tokens {
         let arToken: String
         let hwAppToken: String
+        let arAppToken: String
     }
 
     struct Receipt {
@@ -65,10 +67,10 @@ actor MetaAuth {
         return components.url!
     }
 
-    func exchangeCodeForTokens(code: String, hwAppToken: String) async throws -> Tokens {
+    func exchangeCodeForTokens(code: String, arAppToken: String, hwAppToken: String) async throws -> Tokens {
         let frla = try await exchangeCodeForFRLA(code: code)
-        let arToken = try await exchangeFRLAForAR(frla: frla)
-        return Tokens(arToken: arToken, hwAppToken: hwAppToken)
+        let arToken = try await exchangeFRLAForAR(frla: frla, arAppToken: arAppToken)
+        return Tokens(arToken: arToken, hwAppToken: hwAppToken, arAppToken: arAppToken)
     }
 
     private func exchangeCodeForFRLA(code: String) async throws -> String {
@@ -77,19 +79,24 @@ actor MetaAuth {
             "oidc_auth_code": code,
             "redirect_uri": Self.redirectURI,
         ])
-        let json = try await post(url: Self.exchangeURL, body: body)
+        let json = try await post(url: Self.exchangeURL, body: body, headers: ["User-Agent": Self.metaUserAgent])
         guard let token = json["access_token"] as? String, !token.isEmpty else {
             throw MetaAuthError.tokenExchangeFailed("no access_token in response")
         }
         return token
     }
 
-    private func exchangeFRLAForAR(frla: String) async throws -> String {
+    private func exchangeFRLAForAR(frla: String, arAppToken: String) async throws -> String {
         let body = formEncode([
-            "access_token": frla,
-            "format": "json",
+            ("access_token", arAppToken),
+            ("frl_access_token", frla),
+            ("logging_session_id", UUID().uuidString),
+            ("device_id", UUID().uuidString),
+            ("format", "json"),
+            ("generate_session_cookies", "1"),
+            ("generate_analytics_claim", "1"),
         ])
-        let json = try await post(url: Self.arLoginURL, body: body)
+        let json = try await post(url: Self.arLoginURL, body: body, headers: ["User-Agent": Self.metaUserAgent])
         guard let token = json["access_token"] as? String, !token.isEmpty else {
             throw MetaAuthError.tokenExchangeFailed("no AR access_token in response")
         }
