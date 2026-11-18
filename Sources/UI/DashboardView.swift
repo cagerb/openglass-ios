@@ -1023,7 +1023,7 @@ private struct MetaWebView: UIViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             if let url = navigationAction.request.url, !captured {
                 if let code = extractCode(from: url) {
@@ -1039,7 +1039,7 @@ private struct MetaWebView: UIViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationResponse: WKNavigationResponse,
-            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void
         ) {
             if let url = navigationResponse.response.url, !captured {
                 if let code = extractCode(from: url) {

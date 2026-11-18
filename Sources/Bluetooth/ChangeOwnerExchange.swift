@@ -17,7 +17,7 @@
 import Foundation
 import CryptoKit
 
-final class ChangeOwnerExchange {
+final class ChangeOwnerExchange: @unchecked Sendable {
 
     enum Phase: String {
         case idle               = "Idle"
@@ -143,12 +143,12 @@ final class ChangeOwnerExchange {
                 emit("OpenGlass is now the owner of \(identity.serial)")
 
             } catch let error as ChangeOwnerError {
-                fail(error.localizedDescription ?? "unknown error")
+                fail(error.localizedDescription)
             } catch let error as MetaAuthError {
                 if case .wrongOwner = error {
                     fail("These glasses belong to another Meta account")
                 } else {
-                    fail(error.localizedDescription ?? "Meta API error")
+                    fail(error.localizedDescription)
                 }
             } catch {
                 fail(error.localizedDescription)
@@ -189,7 +189,7 @@ final class ChangeOwnerExchange {
         link.sendMessage(channelID: channelID, serviceID: svcID, messageType: type, payload: payload)
     }
 
-    private func waitForMessage(type: Int, timeout: TimeInterval, onSlow: (() -> Void)? = nil) async throws -> AirShieldMessage {
+    private func waitForMessage(type: Int, timeout: TimeInterval, onSlow: (@Sendable () -> Void)? = nil) async throws -> AirShieldMessage {
         if let idx = deferredMessages.firstIndex(where: { $0.header.messageType == type }) {
             return deferredMessages.remove(at: idx)
         }
