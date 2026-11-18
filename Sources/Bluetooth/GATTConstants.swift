@@ -1,6 +1,7 @@
 import CoreBluetooth
 
-/// All known GATT UUIDs for Meta Ray-Ban Stories gen 1.
+/// Known GATT UUIDs for Meta glasses: the 2021 Ray-Ban Stories (GATT DataX) and
+/// Ray-Ban Meta (L2CAP PSM characteristic).
 enum GATTConstants {
 
     // MARK: - Primary service
@@ -9,11 +10,41 @@ enum GATTConstants {
     /// 16-bit UUID 0xFD5F registered to Facebook, Inc.
     nonisolated(unsafe) static let metaServiceUUID = CBUUID(string: "FD5F")
 
-    // MARK: - DataX characteristic
+    // MARK: - DataX characteristic (Ray-Ban Stories, 2021)
 
     /// The main DataX characteristic used for all command/response traffic.
-    /// Full 128-bit UUID.
+    /// Full 128-bit UUID. Only the 2021 Ray-Ban Stories have it.
     nonisolated(unsafe) static let dataXCharacteristicUUID = CBUUID(string: "24154476-0E45-11AB-6441-E8BE42459478")
+
+    // MARK: - L2CAP PSM characteristic (Ray-Ban Meta, "RB Meta ...")
+
+    /// Ray-Ban Meta glasses have no writable characteristic at all. FD5F only tells
+    /// the phone which LE L2CAP PSM to open; the AirShield + DataX link runs over that
+    /// channel (see `AirShieldLink`). The value is a list of little-endian 16-bit
+    /// words, e.g. `00 00 80 00` = PSM 0x80.
+    nonisolated(unsafe) static let psmCharacteristicUUID = CBUUID(string: "05ACBE9F-6F61-4CA9-80BF-C8BBB52991C0")
+
+    /// The glasses' usual PSM (128). Burbank Audio and the Neural Band use 129.
+    static let defaultL2CAPPSM: UInt16 = 0x80
+
+    /// The PSM out of the characteristic's value: the first word in the LE dynamic
+    /// range 0x80...0xFF, else the first in 0x01...0x7F.
+    static func parsePSM(_ value: Data) -> UInt16? {
+        let bytes = [UInt8](value)
+        var words: [UInt16] = []
+        var index = 0
+        while index + 1 < bytes.count {
+            words.append(UInt16(bytes[index]) | (UInt16(bytes[index + 1]) << 8))
+            index += 2
+        }
+        return words.first(where: { (0x80...0xFF).contains($0) })
+            ?? words.first(where: { (0x01...0x7F).contains($0) })
+    }
+
+    /// Two more read-only FD5F characteristics on Ray-Ban Meta. Their meaning is not
+    /// documented anywhere public; they are only logged.
+    nonisolated(unsafe) static let metaUnknownCharacteristicA = CBUUID(string: "C53673DD-69E0-4A65-B530-6FFB330BFF85")
+    nonisolated(unsafe) static let metaUnknownCharacteristicB = CBUUID(string: "F9FBF15D-6CC8-400A-B70A-AA7DCDCAEDD8")
 
     // MARK: - Standard Battery Service (0x180F)
 

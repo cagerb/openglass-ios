@@ -2,8 +2,12 @@ import Foundation
 import CoreBluetooth
 import os
 
-/// Central manager for scanning, connecting, and communicating with
-/// Meta Ray-Ban Stories glasses over BLE.
+/// Central manager for scanning, connecting, and communicating with Meta glasses over BLE.
+///
+/// Two generations, told apart by what the FD5F service holds:
+/// - Ray-Ban Stories (2021): a write + notify DataX characteristic, used directly.
+/// - Ray-Ban Meta ("RB Meta ..."): read-only characteristics. One of them names an
+///   L2CAP PSM; the AirShield + DataX link runs over that channel (`AirShieldLink`).
 @Observable
 final class BluetoothManager: NSObject, @unchecked Sendable {
 
@@ -49,6 +53,18 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     @ObservationIgnored private var pendingReconnect: CBPeripheral?
     /// True when DataX was picked by shape (write + notify) rather than by its known UUID.
     @ObservationIgnored private var dataXIsFallback = false
+
+    // Ray-Ban Meta ("RB Meta ...") link: no GATT data channel, an L2CAP channel instead.
+    // Touched on `bleQueue` only.
+
+    /// True once FD5F turned out to hold the L2CAP PSM characteristic.
+    @ObservationIgnored private var usesL2CAP = false
+    /// True between openL2CAPChannel and its didOpen callback.
+    @ObservationIgnored private var l2capOpening = false
+    /// PSMs already tried on this connection, so a refused one is not retried forever.
+    @ObservationIgnored private var triedPSMs: Set<UInt16> = []
+    @ObservationIgnored private var l2capPipe: L2CAPPipe?
+    @ObservationIgnored private var airShield: AirShieldLink?
 
     /// Maximum number of entries kept in the in-app debug log.
     private static let debugLogLimit = 400
@@ -143,7 +159,12 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     func sendDataXMessage(type: UInt8, payload: Data) {
         guard let characteristic = dataXCharacteristic,
               let peripheral = connectedPeripheral else {
-            lastError = "Not connected or DataX characteristic not found."
+            if usesL2CAP {
+                lastError = "These glasses use the L2CAP + AirShield link. The Stories gen 1 handshake does not apply to them."
+                log("Gen 1 DataX send refused: these glasses have no GATT DataX characteristic")
+            } else {
+                lastError = "Not connected or DataX characteristic not found."
+            }
             return
         }
 
@@ -206,6 +227,8 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         reconnectAttempted = false
         pendingReconnect = nil
         dataXIsFallback = false
+        tearDownL2CAP()
+        usesL2CAP = false
         connectedPeripheral = nil
         dataXCharacteristic = nil
         batteryLevel = nil
@@ -232,6 +255,100 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         connectedPeripheral?.discoverServices(nil)  // discover ALL services
         connectionState = .discoveringServices
         log("Discovering ALL services (nil filter)")
+    }
+
+    // MARK: - L2CAP + AirShield (Ray-Ban Meta)
+
+    private func tearDownL2CAP() {
+        l2capPipe?.close()
+        l2capPipe = nil
+        airShield = nil
+        l2capOpening = false
+        triedPSMs.removeAll()
+    }
+
+    /// The PSM characteristic's value arrived (by read or by notify): open the channel it names.
+    private func handlePSMValue(_ value: Data, on peripheral: CBPeripheral) {
+        let parsed = GATTConstants.parsePSM(value)
+        if let parsed {
+            log("L2CAP PSM characteristic: \(Self.hex(value)) -> PSM \(parsed) (0x\(String(parsed, radix: 16)))")
+        } else {
+            log("L2CAP PSM characteristic: \(Self.hex(value)) holds no usable PSM, falling back to \(GATTConstants.defaultL2CAPPSM)")
+        }
+        openL2CAP(psm: parsed ?? GATTConstants.defaultL2CAPPSM, on: peripheral)
+    }
+
+    private func openL2CAP(psm: UInt16, on peripheral: CBPeripheral) {
+        guard l2capPipe == nil, !l2capOpening else { return }
+        guard !triedPSMs.contains(psm) else {
+            log("L2CAP PSM \(psm) was already tried on this connection, not retrying")
+            return
+        }
+        guard peripheral.state == .connected else { return }
+        triedPSMs.insert(psm)
+        l2capOpening = true
+        log("Opening L2CAP channel on PSM \(psm)...")
+        peripheral.openL2CAPChannel(CBL2CAPPSM(psm))
+    }
+
+    /// The L2CAP channel is open: wrap its streams and start the AirShield handshake.
+    private func startAirShield(on channel: CBL2CAPChannel) {
+        guard let pipe = L2CAPPipe(channel: channel) else {
+            log("L2CAP channel opened without streams, cannot use it")
+            lastError = "The glasses opened a data channel with no streams."
+            return
+        }
+        let generation = connectionGeneration
+        let link = AirShieldLink()
+
+        // Stream callbacks arrive on the main thread; everything else lives on bleQueue.
+        pipe.onBytes = { [weak self] bytes in
+            self?.bleQueue.async { [weak self] in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.log("L2CAP RX \(bytes.count) bytes: \(Self.hex(Data(bytes), limit: 48))")
+                self.airShield?.feed(bytes)
+            }
+        }
+        pipe.onEvent = { [weak self] event in
+            self?.bleQueue.async { [weak self] in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.log(event)
+            }
+        }
+        pipe.onClosed = { [weak self] reason in
+            self?.bleQueue.async { [weak self] in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.log(reason)
+                self.l2capPipe = nil
+                self.airShield = nil
+                if self.connectionState == .connected || self.connectionState == .authenticated {
+                    self.connectionState = .discoveringServices
+                }
+                self.lastError = "The glasses closed the data channel. See the debug log."
+            }
+        }
+
+        link.log = { [weak self] message in self?.log(message) }
+        link.send = { [weak self] bytes in
+            guard let self else { return }
+            self.log("L2CAP TX \(bytes.count) bytes")
+            self.l2capPipe?.write(bytes)
+        }
+        link.onSecure = { [weak self] in
+            guard let self else { return }
+            self.connectionState = .connected
+            self.log("AirShield link is up. Asking the glasses for their identity (svc36 0x3000)...")
+            self.airShield?.requestIdentity()
+            self.log("NOTE: no owner key yet, so the trust exchange is skipped and the glasses' services stay closed")
+        }
+        link.onFailure = { [weak self] reason in
+            self?.lastError = "Encrypted link to the glasses failed: \(reason)"
+        }
+
+        l2capPipe = pipe
+        airShield = link
+        pipe.open()
+        link.start()
     }
 
     // MARK: - DataX characteristic selection
@@ -556,9 +673,18 @@ extension BluetoothManager: CBPeripheralDelegate {
                 return
             }
             metaEmptyCount = 0
-            let current = dataXCharacteristic
-            if current == nil || !chars.contains(where: { $0 === current }) {
-                selectDataXCharacteristic(from: chars, on: peripheral)
+            if chars.contains(where: { $0.uuid == GATTConstants.psmCharacteristicUUID }) {
+                // Ray-Ban Meta: FD5F has no data characteristic, only the PSM of an L2CAP
+                // channel. Reading it (below) is what opens the channel.
+                if !usesL2CAP {
+                    usesL2CAP = true
+                    log("FD5F holds the L2CAP PSM characteristic: Ray-Ban Meta link (L2CAP + AirShield), no GATT DataX")
+                }
+            } else {
+                let current = dataXCharacteristic
+                if current == nil || !chars.contains(where: { $0 === current }) {
+                    selectDataXCharacteristic(from: chars, on: peripheral)
+                }
             }
         }
 
@@ -613,6 +739,33 @@ extension BluetoothManager: CBPeripheralDelegate {
         peripheral.discoverServices(nil)
     }
 
+    func peripheral(_ peripheral: CBPeripheral,
+                     didOpen channel: CBL2CAPChannel?,
+                     error: Error?) {
+        l2capOpening = false
+        if let error {
+            log("L2CAP open FAILED: \(Self.describe(error: error))")
+            // The characteristic can name a PSM the glasses refuse; the usual one is worth one try.
+            if !triedPSMs.contains(GATTConstants.defaultL2CAPPSM) {
+                log("Retrying on the usual PSM \(GATTConstants.defaultL2CAPPSM)")
+                openL2CAP(psm: GATTConstants.defaultL2CAPPSM, on: peripheral)
+            } else {
+                lastError = "Could not open the glasses' data channel: \(error.localizedDescription)"
+            }
+            return
+        }
+        guard let channel else {
+            log("L2CAP open returned neither a channel nor an error")
+            return
+        }
+        guard l2capPipe == nil else {
+            log("L2CAP channel opened twice (PSM \(channel.psm)), ignoring the second")
+            return
+        }
+        log("L2CAP channel open on PSM \(channel.psm), starting the AirShield handshake")
+        startAirShield(on: channel)
+    }
+
     func peripheralDidUpdateName(_ peripheral: CBPeripheral) {
         log("peripheralDidUpdateName: \(peripheral.name ?? "nil")")
     }
@@ -636,6 +789,12 @@ extension BluetoothManager: CBPeripheralDelegate {
         }
 
         log("didUpdateValue: \(characteristic.uuid.uuidString) (\(value.count) bytes) \(Self.hex(value))")
+
+        if characteristic.uuid == GATTConstants.psmCharacteristicUUID
+            && characteristic.service?.uuid == GATTConstants.metaServiceUUID {
+            handlePSMValue(value, on: peripheral)
+            return
+        }
 
         switch characteristic.uuid {
         case GATTConstants.batteryLevelUUID:

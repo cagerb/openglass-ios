@@ -2,6 +2,8 @@
 
 An open-source iOS companion app for **Meta Ray-Ban Stories gen 1** smart glasses. Fully replaces the official Meta AI app — no Meta cloud, no Meta account, no ongoing dependency.
 
+> **Protocol status (2026-11-17).** Glasses that advertise as `RB Meta ...` are Ray-Ban Meta, not the 2021 Stories, and they do not speak the GATT DataX protocol described below. Their FD5F service is read-only: characteristic `05ACBE9F-6F61-4CA9-80BF-C8BBB52991C0` only names an LE L2CAP PSM (128). The real link is **AirShield + DataX over that L2CAP channel**: a P-256 ECDH handshake, then AES-256-CBC + HMAC-SHA256 frames. OpenGlass now opens the channel, runs the handshake and asks the glasses for their identity (`Sources/Bluetooth/AirShieldLink.swift`). It cannot use the glasses' services yet: those open only to the holder of the **owner key**, a P-256 key the glasses accept through ownership receipts signed by Meta's servers. Protocol references: [zhuowei/Starcruiser-mac](https://github.com/zhuowei/Starcruiser-mac), [zhuowei/SimStella](https://github.com/zhuowei/SimStella), [Visor protocol notes](https://visor.macedonga.com/protocol/). The RSA / bootstrap-ticket flow below applies to the 2021 Stories only.
+
 ## What it does
 
 - **Independent BLE connection** — connects directly to your glasses over Bluetooth using the reverse-engineered DataX protocol
