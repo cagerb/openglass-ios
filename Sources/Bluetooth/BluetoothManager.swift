@@ -98,8 +98,11 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Whether the AirShield link is in the secure phase (tracked for observation).
+    private(set) var airShieldSecure = false
+
     /// Whether the AirShield link is in the secure phase.
-    var isAirShieldSecure: Bool { airShield?.phase == .secure }
+    var isAirShieldSecure: Bool { airShieldSecure }
 
     /// Start the ownership forgery attempt on the current AirShield link.
     func startOwnershipForgery() {
@@ -304,6 +307,10 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         l2capPipe?.close()
         l2capPipe = nil
         airShield = nil
+        airShieldSecure = false
+        forger = nil
+        forgerPhase = .idle
+        forgerFailure = ""
         l2capOpening = false
         triedPSMs.removeAll()
     }
@@ -362,6 +369,10 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 self.log(reason)
                 self.l2capPipe = nil
                 self.airShield = nil
+                self.airShieldSecure = false
+                self.forger = nil
+                self.forgerPhase = .idle
+                self.forgerFailure = ""
                 if self.connectionState == .connected || self.connectionState == .authenticated {
                     self.connectionState = .discoveringServices
                 }
@@ -378,6 +389,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         link.onSecure = { [weak self] in
             guard let self else { return }
             self.connectionState = .connected
+            self.airShieldSecure = true
             self.log("AirShield link is up. Asking the glasses for their identity (svc36 0x3000)...")
             self.airShield?.requestIdentity()
             self.log("NOTE: no owner key yet, so the trust exchange is skipped and the glasses' services stay closed")
