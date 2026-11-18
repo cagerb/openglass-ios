@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import CoreBluetooth
 @preconcurrency import Security
@@ -24,6 +25,10 @@ final class GlassesController {
     private(set) var discoveredPeripherals: [CBPeripheral] = []
     private(set) var lastError: String?
     private(set) var hasIdentity = false
+    private(set) var hasOwnerKey = false
+    private(set) var ownerSerial: String = ""
+    private(set) var trustPhase: OwnerTrustExchange.Phase = .idle
+    private(set) var trustFailure: String = ""
 
     // MARK: - Dependencies
 
@@ -31,6 +36,7 @@ final class GlassesController {
     private let sessionCrypto = SessionCrypto()
     private let authHandshake: AuthHandshake
     private let identityStore = IdentityStore()
+    private let ownerKeyStore = OwnerKeyStore()
     private let logger = Logger(subsystem: "com.openglass.app", category: "GlassesController")
 
     // MARK: - Init
@@ -129,6 +135,37 @@ final class GlassesController {
         }
     }
 
+    // MARK: - Owner key (P-256 from G-Link)
+
+    func loadOwnerKey() async {
+        hasOwnerKey = await ownerKeyStore.hasOwnerKey()
+        if hasOwnerKey {
+            do {
+                let key = try await ownerKeyStore.loadSigningKey()
+                bluetooth.ownerSigningKey = key
+                ownerSerial = (try? await ownerKeyStore.loadSerial()) ?? ""
+                logger.info("Owner key loaded for serial \(self.ownerSerial, privacy: .private)")
+            } catch {
+                logger.error("Failed to load owner key: \(error)")
+                hasOwnerKey = false
+            }
+        }
+    }
+
+    func importOwnerKey(from data: Data) async throws {
+        try await ownerKeyStore.importFromGLink(data)
+        await loadOwnerKey()
+    }
+
+    func deleteOwnerKey() async {
+        await ownerKeyStore.deleteOwnerKey()
+        bluetooth.ownerSigningKey = nil
+        hasOwnerKey = false
+        ownerSerial = ""
+        trustPhase = .idle
+        trustFailure = ""
+    }
+
     // MARK: - Bluetooth observation
 
     private func observeBluetooth() {
@@ -149,6 +186,9 @@ final class GlassesController {
         if let error = bluetooth.lastError, lastError == nil {
             lastError = error
         }
+
+        trustPhase = bluetooth.trustPhase
+        trustFailure = bluetooth.trustFailure
 
         switch bluetooth.connectionState {
         case .disconnected:

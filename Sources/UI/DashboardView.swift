@@ -1,9 +1,12 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct DashboardView: View {
     @Environment(GlassesController.self) private var controller
     @Environment(GlassesState.self) private var glasses
+    @State private var showingOwnerKeyPicker = false
+    @State private var ownerKeyError: String?
 
     var body: some View {
         NavigationStack {
@@ -23,6 +26,7 @@ struct DashboardView: View {
                         deviceInfoCard
 
                         if controller.bluetooth.isAirShieldSecure {
+                            ownershipCard
                             forgeryCard
                         }
 
@@ -38,6 +42,27 @@ struct DashboardView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     ConnectionButton()
+                }
+            }
+            .fileImporter(
+                isPresented: $showingOwnerKeyPicker,
+                allowedContentTypes: [.data],
+                allowsMultipleSelection: false
+            ) { result in
+                Task {
+                    do {
+                        guard let url = try result.get().first else { return }
+                        guard url.startAccessingSecurityScopedResource() else {
+                            ownerKeyError = "Cannot access file"
+                            return
+                        }
+                        defer { url.stopAccessingSecurityScopedResource() }
+                        let data = try Data(contentsOf: url)
+                        try await controller.importOwnerKey(from: data)
+                        ownerKeyError = nil
+                    } catch {
+                        ownerKeyError = error.localizedDescription
+                    }
                 }
             }
         }
@@ -273,6 +298,125 @@ struct DashboardView: View {
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Ownership card
+
+    private var ownershipCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "person.badge.key.fill")
+                    .foregroundStyle(.green)
+                Text("Owner Trust")
+                    .font(.headline)
+                Spacer()
+                Text(controller.trustPhase.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(trustPhaseColor)
+            }
+
+            if controller.hasOwnerKey {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Owner key loaded")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        if !controller.ownerSerial.isEmpty {
+                            Text("Serial: \(controller.ownerSerial)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+
+                switch controller.trustPhase {
+                case .idle:
+                    Text("Trust exchange starts automatically on next secure connection.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                case .succeeded:
+                    HStack {
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                            .font(.title2)
+                        Text("OWNER VERIFIED — services unlocked")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.green)
+                    }
+
+                case .failed:
+                    HStack {
+                        Image(systemName: "xmark.octagon.fill")
+                            .foregroundStyle(.red)
+                            .font(.title2)
+                        VStack(alignment: .leading) {
+                            Text("Trust exchange failed")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                            if !controller.trustFailure.isEmpty {
+                                Text(controller.trustFailure)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                default:
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(controller.trustPhase.rawValue)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button(role: .destructive) {
+                    Task { await controller.deleteOwnerKey() }
+                } label: {
+                    Label("Remove Owner Key", systemImage: "trash")
+                        .font(.caption)
+                }
+            } else {
+                Text("Import the owner key extracted from G-Link Direct to prove ownership and unlock all services.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    showingOwnerKeyPicker = true
+                } label: {
+                    Label("Import Owner Key", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+            }
+
+            if let error = ownerKeyError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var trustPhaseColor: Color {
+        switch controller.trustPhase {
+        case .idle: return .secondary
+        case .succeeded: return .green
+        case .failed: return .red
+        default: return .orange
+        }
     }
 
     // MARK: - Forgery card

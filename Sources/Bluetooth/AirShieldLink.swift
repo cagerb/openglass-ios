@@ -396,13 +396,13 @@ final class AirShieldLink {
 
     private(set) var phase: Phase = .idle
 
-    private let privateKey = P256.KeyAgreement.PrivateKey()
-    private let myChallenge = AirShieldLink.randomBytes(16)
-    private let mySeed = AirShieldLink.randomBytes(32)
+    let privateKey = P256.KeyAgreement.PrivateKey()
+    let myChallenge = AirShieldLink.randomBytes(16)
+    let mySeed = AirShieldLink.randomBytes(32)
     private let myIV = AirShieldLink.randomBytes(16)
     private let mySeq = UInt32.random(in: 0...UInt32.max)
 
-    private struct PeerRequest {
+    struct PeerRequest {
         let publicKey: [UInt8]
         let challenge: [UInt8]
         let supportedParameters: Int
@@ -411,7 +411,7 @@ final class AirShieldLink {
         let keyHints: Int
     }
 
-    private struct PeerEnable {
+    struct PeerEnable {
         let publicKey: [UInt8]
         let seed: [UInt8]
         let iv: [UInt8]
@@ -420,8 +420,8 @@ final class AirShieldLink {
         let quirks: Int
     }
 
-    private var peerRequest: PeerRequest?
-    private var peerEnable: PeerEnable?
+    private(set) var peerRequest: PeerRequest?
+    private(set) var peerEnable: PeerEnable?
     private var txCipher: AirShieldFrameCipher?
     private var rxCipher: AirShieldFrameCipher?
 
@@ -749,6 +749,30 @@ final class AirShieldLink {
             log?("Raw encrypted send failed: \(error)")
             return false
         }
+    }
+
+    /// Send a status frame (error tag) on a channel.
+    @discardableResult
+    func sendStatus(channelID: Int, statusCode: Int) -> Bool {
+        guard phase == .secure, var cipher = txCipher else {
+            log?("DataX TX status refused: the link is not encrypted yet")
+            return false
+        }
+        let message = DataXHeader.build(
+            channelID: channelID, dataLength: 0, errorID: statusCode
+        )
+        var frames: [[UInt8]] = []
+        do {
+            let sealed = try cipher.seal(message)
+            frames.append([Self.frameData] + sealed)
+        } catch {
+            fail("could not seal a status frame (\(error))")
+            return false
+        }
+        txCipher = cipher
+        log?("DataX TX status=\(Self.hex16(statusCode)) ch=\(Self.hex16(channelID))")
+        for frame in frames { send?(frame) }
+        return true
     }
 
     /// Ask the glasses who they are (svc36 IDENTITY_REQUEST). They answer with their

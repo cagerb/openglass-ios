@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import CryptoKit
 import os
 
 /// Central manager for scanning, connecting, and communicating with Meta glasses over BLE.
@@ -66,10 +67,17 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     @ObservationIgnored private var l2capPipe: L2CAPPipe?
     @ObservationIgnored var airShield: AirShieldLink?
     @ObservationIgnored private var forger: OwnershipForger?
+    @ObservationIgnored private var trustExchange: OwnerTrustExchange?
 
     /// Current phase of the ownership forgery attempt, mirrored for observation.
     private(set) var forgerPhase: OwnershipForger.Phase = .idle
     private(set) var forgerFailure: String = ""
+
+    private(set) var trustPhase: OwnerTrustExchange.Phase = .idle
+    private(set) var trustFailure: String = ""
+
+    /// Set by GlassesController before connecting when an owner key is available.
+    @ObservationIgnored var ownerSigningKey: P256.Signing.PrivateKey?
 
     /// Maximum number of entries kept in the in-app debug log.
     private static let debugLogLimit = 400
@@ -311,6 +319,9 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         forger = nil
         forgerPhase = .idle
         forgerFailure = ""
+        trustExchange = nil
+        trustPhase = .idle
+        trustFailure = ""
         l2capOpening = false
         triedPSMs.removeAll()
     }
@@ -373,6 +384,9 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 self.forger = nil
                 self.forgerPhase = .idle
                 self.forgerFailure = ""
+                self.trustExchange = nil
+                self.trustPhase = .idle
+                self.trustFailure = ""
                 if self.connectionState == .connected || self.connectionState == .authenticated {
                     self.connectionState = .discoveringServices
                 }
@@ -392,14 +406,48 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             self.airShieldSecure = true
             self.log("AirShield link is up. Asking the glasses for their identity (svc36 0x3000)...")
             self.airShield?.requestIdentity()
-            self.log("NOTE: no owner key yet, so the trust exchange is skipped and the glasses' services stay closed")
+            if self.ownerSigningKey != nil {
+                self.log("Owner key loaded — will start trust exchange after identity response")
+            } else {
+                self.log("No owner key — services will stay locked")
+            }
         }
         link.onMessage = { [weak self] message in
-            guard let self, let forger = self.forger, forger.phase != .idle && forger.phase != .failed && forger.phase != .succeeded else { return }
-            if message.header.serviceID == AirShieldLink.serviceIdentity || message.header.serviceID == 0 {
-                forger.handleMessage(message, link: link)
-                self.forgerPhase = forger.phase
-                self.forgerFailure = forger.failureReason
+            guard let self else { return }
+            let isSvc36 = message.header.serviceID == AirShieldLink.serviceIdentity || message.header.serviceID == 0
+
+            if let trust = self.trustExchange, trust.phase == .proving || trust.phase == .waitingForGlassesPush {
+                if isSvc36 {
+                    trust.handleMessage(message, link: link)
+                    self.trustPhase = trust.phase
+                    self.trustFailure = trust.failureReason
+                }
+                return
+            }
+
+            if isSvc36 && message.header.messageType == AirShieldLink.typeIdentityResponse && !message.header.hasError {
+                if let key = self.ownerSigningKey, let peer = link.peerRequest {
+                    let params = OwnerTrustExchange.HandshakeParams(
+                        glassesChallenge: peer.challenge,
+                        glassesPubkey: peer.publicKey,
+                        ourSeed: link.mySeed,
+                        ourPubkey: Array(link.privateKey.publicKey.rawRepresentation)
+                    )
+                    let exchange = OwnerTrustExchange()
+                    exchange.log = { [weak self] msg in self?.log(msg) }
+                    self.trustExchange = exchange
+                    self.trustPhase = .proving
+                    exchange.start(link: link, params: params, ownerKey: key)
+                    return
+                }
+            }
+
+            if let forger = self.forger, forger.phase != .idle && forger.phase != .failed && forger.phase != .succeeded {
+                if isSvc36 {
+                    forger.handleMessage(message, link: link)
+                    self.forgerPhase = forger.phase
+                    self.forgerFailure = forger.failureReason
+                }
             }
         }
         link.onFailure = { [weak self] reason in

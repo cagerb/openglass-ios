@@ -13,6 +13,7 @@ struct OpenGlassApp: App {
                 .environment(glassesState)
                 .task {
                     await controller.checkIdentity()
+                    await controller.loadOwnerKey()
                 }
         }
         .modelContainer(for: [CaptureRecord.self])
