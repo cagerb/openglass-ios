@@ -76,6 +76,16 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private(set) var trustPhase: OwnerTrustExchange.Phase = .idle
     private(set) var trustFailure: String = ""
 
+    @ObservationIgnored private var firmwareManager: FirmwareManager?
+    @ObservationIgnored private var mobileConfigManager: MobileConfigManager?
+    @ObservationIgnored private var airshipSender: AirshipSender?
+
+    private(set) var firmwarePhase: FirmwareManager.Phase = .idle
+    private(set) var firmwareFailure: String = ""
+    private(set) var firmwareProgress: Double = 0
+    private(set) var mobileConfigPhase: MobileConfigManager.Phase = .idle
+    private(set) var mobileConfigFailure: String = ""
+
     /// Set by GlassesController before connecting when an owner key is available.
     @ObservationIgnored var ownerSigningKey: P256.Signing.PrivateKey?
 
@@ -124,6 +134,36 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             self.forger = f
             self.forgerPhase = .waitingForIdentity
             f.start(link: link)
+        }
+    }
+
+    /// Push a firmware ZIP to the glasses via svc29 + svc20 Airship.
+    func startFirmwareUpdate(firmwareZIP: [UInt8], name: String = "firmware", version: String = "0") {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else {
+                self?.log("Cannot start firmware update: AirShield link is not secure")
+                return
+            }
+            let fm = FirmwareManager()
+            fm.log = { [weak self] message in self?.log(message) }
+            self.firmwareManager = fm
+            self.firmwarePhase = .startingSession
+            fm.startUpdate(link: link, firmwareZIP: firmwareZIP, name: name, version: version)
+        }
+    }
+
+    /// Push MobileConfig tables to the glasses via svc19 + svc20 Airship.
+    func pushMobileConfig(sessionlessTable: [UInt8], paramsTable: [UInt8]) {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else {
+                self?.log("Cannot push MobileConfig: AirShield link is not secure")
+                return
+            }
+            let mc = MobileConfigManager()
+            mc.log = { [weak self] message in self?.log(message) }
+            self.mobileConfigManager = mc
+            self.mobileConfigPhase = .delivering
+            mc.pushConfig(link: link, sessionlessTable: sessionlessTable, paramsTable: paramsTable)
         }
     }
 
@@ -322,6 +362,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         trustExchange = nil
         trustPhase = .idle
         trustFailure = ""
+        firmwareManager = nil
+        firmwarePhase = .idle
+        firmwareFailure = ""
+        firmwareProgress = 0
+        mobileConfigManager = nil
+        mobileConfigPhase = .idle
+        mobileConfigFailure = ""
+        airshipSender = nil
         l2capOpening = false
         triedPSMs.removeAll()
     }
@@ -387,6 +435,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 self.trustExchange = nil
                 self.trustPhase = .idle
                 self.trustFailure = ""
+                self.firmwareManager = nil
+                self.firmwarePhase = .idle
+                self.firmwareFailure = ""
+                self.firmwareProgress = 0
+                self.mobileConfigManager = nil
+                self.mobileConfigPhase = .idle
+                self.mobileConfigFailure = ""
+                self.airshipSender = nil
                 if self.connectionState == .connected || self.connectionState == .authenticated {
                     self.connectionState = .discoveringServices
                 }
@@ -447,6 +503,41 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                     forger.handleMessage(message, link: link)
                     self.forgerPhase = forger.phase
                     self.forgerFailure = forger.failureReason
+                }
+            }
+
+            let svcID = message.header.serviceID
+
+            // svc29: firmware session messages
+            if svcID == FirmwareManager.serviceFirmware || (svcID == 0 && self.firmwareManager != nil) {
+                if let fm = self.firmwareManager, fm.phase != .idle && fm.phase != .failed && fm.phase != .succeeded {
+                    fm.handleMessage(message, link: link)
+                    self.firmwarePhase = fm.phase
+                    self.firmwareFailure = fm.failureReason
+                    self.firmwareProgress = fm.transferProgress
+                }
+            }
+
+            // svc20: airship file transfer messages (routed to active sender)
+            if svcID == 20 || (svcID == 0 && (self.firmwareManager != nil || self.mobileConfigManager != nil)) {
+                self.firmwareManager?.handleAirshipMessage(message)
+                self.mobileConfigManager?.handleAirshipMessage(message)
+                if let fm = self.firmwareManager {
+                    self.firmwarePhase = fm.phase
+                    self.firmwareProgress = fm.transferProgress
+                }
+                if let mc = self.mobileConfigManager {
+                    self.mobileConfigPhase = mc.phase
+                    self.mobileConfigFailure = mc.failureReason
+                }
+            }
+
+            // svc19: MobileConfig sync messages
+            if svcID == MobileConfigManager.serviceMobileConfig {
+                if let mc = self.mobileConfigManager {
+                    mc.handleMessage(message, link: link)
+                    self.mobileConfigPhase = mc.phase
+                    self.mobileConfigFailure = mc.failureReason
                 }
             }
         }

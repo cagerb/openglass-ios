@@ -7,6 +7,7 @@ struct DashboardView: View {
     @Environment(GlassesState.self) private var glasses
     @State private var showingOwnerKeyPicker = false
     @State private var ownerKeyError: String?
+    @State private var showingFirmwarePicker = false
 
     var body: some View {
         NavigationStack {
@@ -27,6 +28,12 @@ struct DashboardView: View {
 
                         if controller.bluetooth.isAirShieldSecure {
                             ownershipCard
+
+                            if controller.trustPhase == .succeeded {
+                                firmwareCard
+                                mobileConfigCard
+                            }
+
                             forgeryCard
                         }
 
@@ -62,6 +69,23 @@ struct DashboardView: View {
                         ownerKeyError = nil
                     } catch {
                         ownerKeyError = error.localizedDescription
+                    }
+                }
+            }
+            .fileImporter(
+                isPresented: $showingFirmwarePicker,
+                allowedContentTypes: [.data, .archive],
+                allowsMultipleSelection: false
+            ) { result in
+                Task {
+                    do {
+                        guard let url = try result.get().first else { return }
+                        guard url.startAccessingSecurityScopedResource() else { return }
+                        defer { url.stopAccessingSecurityScopedResource() }
+                        let data = try Data(contentsOf: url)
+                        controller.startFirmwareUpdate(from: data)
+                    } catch {
+                        // File access error — firmware manager logs internally
                     }
                 }
             }
@@ -412,6 +436,172 @@ struct DashboardView: View {
 
     private var trustPhaseColor: Color {
         switch controller.trustPhase {
+        case .idle: return .secondary
+        case .succeeded: return .green
+        case .failed: return .red
+        default: return .orange
+        }
+    }
+
+    // MARK: - Firmware card
+
+    private var firmwareCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "arrow.down.app.fill")
+                    .foregroundStyle(.blue)
+                Text("Firmware")
+                    .font(.headline)
+                Spacer()
+                Text(controller.firmwarePhase.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(firmwarePhaseColor)
+            }
+
+            switch controller.firmwarePhase {
+            case .idle:
+                Text("Push a firmware ZIP to the glasses over Airship. Use Meta's signed package for stock updates, or a custom image after disabling signature verification.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    showingFirmwarePicker = true
+                } label: {
+                    Label("Select Firmware ZIP", systemImage: "doc.zipper")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+            case .transferring:
+                VStack(spacing: 8) {
+                    ProgressView(value: controller.firmwareProgress)
+                        .tint(.blue)
+                    Text("\(Int(controller.firmwareProgress * 100))% transferred")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+            case .succeeded:
+                HStack {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.title2)
+                    Text("Firmware installed")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.green)
+                }
+
+            case .failed:
+                HStack {
+                    Image(systemName: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                    VStack(alignment: .leading) {
+                        Text("Firmware update failed")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        if !controller.firmwareFailure.isEmpty {
+                            Text(controller.firmwareFailure)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+            default:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(controller.firmwarePhase.rawValue)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var firmwarePhaseColor: Color {
+        switch controller.firmwarePhase {
+        case .idle: return .secondary
+        case .succeeded: return .green
+        case .failed: return .red
+        default: return .blue
+        }
+    }
+
+    // MARK: - MobileConfig card
+
+    private var mobileConfigCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "gearshape.2.fill")
+                    .foregroundStyle(.orange)
+                Text("MobileConfig")
+                    .font(.headline)
+                Spacer()
+                Text(controller.mobileConfigPhase.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(mobileConfigPhaseColor)
+            }
+
+            Text("Control the glasses' feature flags. Disabling signature verification allows sideloading unsigned apps — the path to shell access and custom firmware.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            switch controller.mobileConfigPhase {
+            case .idle:
+                Button {
+                    controller.disableSignatureVerification()
+                } label: {
+                    Label("Disable Signature Verification", systemImage: "lock.open.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+
+            case .succeeded:
+                HStack {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.title2)
+                    Text("Config delivered to glasses")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.green)
+                }
+
+            case .failed:
+                HStack {
+                    Image(systemName: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                    VStack(alignment: .leading) {
+                        Text("Config delivery failed")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        if !controller.mobileConfigFailure.isEmpty {
+                            Text(controller.mobileConfigFailure)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+            default:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(controller.mobileConfigPhase.rawValue)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var mobileConfigPhaseColor: Color {
+        switch controller.mobileConfigPhase {
         case .idle: return .secondary
         case .succeeded: return .green
         case .failed: return .red

@@ -29,6 +29,11 @@ final class GlassesController {
     private(set) var ownerSerial: String = ""
     private(set) var trustPhase: OwnerTrustExchange.Phase = .idle
     private(set) var trustFailure: String = ""
+    private(set) var firmwarePhase: FirmwareManager.Phase = .idle
+    private(set) var firmwareFailure: String = ""
+    private(set) var firmwareProgress: Double = 0
+    private(set) var mobileConfigPhase: MobileConfigManager.Phase = .idle
+    private(set) var mobileConfigFailure: String = ""
 
     // MARK: - Dependencies
 
@@ -166,6 +171,27 @@ final class GlassesController {
         trustFailure = ""
     }
 
+    // MARK: - Firmware + MobileConfig
+
+    func startFirmwareUpdate(from data: Data) {
+        bluetooth.startFirmwareUpdate(firmwareZIP: Array(data))
+    }
+
+    func disableSignatureVerification() {
+        let sessionlessTable = MobileConfigBuilder.buildTable(
+            schemaHash: "unknown",
+            bools: [MobileConfigBuilder.signatureVerificationDisabled()]
+        )
+        let paramsTable = MobileConfigBuilder.buildTable(
+            schemaHash: "unknown",
+            bools: []
+        )
+        bluetooth.pushMobileConfig(
+            sessionlessTable: sessionlessTable,
+            paramsTable: paramsTable
+        )
+    }
+
     // MARK: - Bluetooth observation
 
     private func observeBluetooth() {
@@ -189,6 +215,11 @@ final class GlassesController {
 
         trustPhase = bluetooth.trustPhase
         trustFailure = bluetooth.trustFailure
+        firmwarePhase = bluetooth.firmwarePhase
+        firmwareFailure = bluetooth.firmwareFailure
+        firmwareProgress = bluetooth.firmwareProgress
+        mobileConfigPhase = bluetooth.mobileConfigPhase
+        mobileConfigFailure = bluetooth.mobileConfigFailure
 
         switch bluetooth.connectionState {
         case .disconnected:
