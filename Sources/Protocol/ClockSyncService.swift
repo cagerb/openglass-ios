@@ -25,7 +25,7 @@ final class ClockSyncService: @unchecked Sendable {
 
     var log: ((String) -> Void)?
 
-    private var channelID = 0
+    private(set) var channelID = 0
     private var firstMessage = true
 
     // MARK: - Sync

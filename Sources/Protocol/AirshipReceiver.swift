@@ -47,7 +47,7 @@ final class AirshipReceiver: @unchecked Sendable {
     var log: ((String) -> Void)?
 
     private var pendingRequests: [String: (uuid: [UInt8], destination: URL, continuation: CheckedContinuation<URL, Error>)] = [:]
-    private var channelID: Int = 0
+    private(set) var channelID: Int = 0
     private var firstMessage = true
     private weak var link: AirShieldLink?
 

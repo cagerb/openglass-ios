@@ -32,7 +32,7 @@ final class DeviceStatusService: @unchecked Sendable {
 
     var log: ((String) -> Void)?
 
-    private var channelID: Int = 0
+    private(set) var channelID: Int = 0
     private var firstMessage = true
 
     // MARK: - Request

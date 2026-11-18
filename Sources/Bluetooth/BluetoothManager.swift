@@ -242,27 +242,35 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 svc26.log = { [weak self] msg in self?.log(msg) }
                 svc26.sendInit(link: link)
                 self.connectionInitSent = true
+                self.log("Waiting 500ms after svc26 init before starting other services...")
             }
 
-            if self.clockSyncService == nil {
-                let svc22 = ClockSyncService()
-                svc22.log = { [weak self] msg in self?.log(msg) }
-                self.clockSyncService = svc22
-                svc22.sync(link: link)
+            self.bleQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, let link = self.airShield, link.phase == .secure else { return }
+                self.startRemainingServices(link: link)
             }
+        }
+    }
 
-            if self.deviceStatusService == nil {
-                let svc28 = DeviceStatusService()
-                svc28.log = { [weak self] msg in self?.log(msg) }
-                self.deviceStatusService = svc28
-                svc28.requestStatus(link: link)
-            }
+    private func startRemainingServices(link: AirShieldLink) {
+        if self.clockSyncService == nil {
+            let svc22 = ClockSyncService()
+            svc22.log = { [weak self] msg in self?.log(msg) }
+            self.clockSyncService = svc22
+            svc22.sync(link: link)
+        }
 
-            if self.assistantService == nil {
-                let svc15 = AssistantService()
-                svc15.log = { [weak self] msg in self?.log(msg) }
-                self.assistantService = svc15
-            }
+        if self.deviceStatusService == nil {
+            let svc28 = DeviceStatusService()
+            svc28.log = { [weak self] msg in self?.log(msg) }
+            self.deviceStatusService = svc28
+            svc28.requestStatus(link: link)
+        }
+
+        if self.assistantService == nil {
+            let svc15 = AssistantService()
+            svc15.log = { [weak self] msg in self?.log(msg) }
+            self.assistantService = svc15
         }
     }
 
@@ -681,6 +689,8 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             }
 
             let svcID = message.header.serviceID
+            let ch = message.header.channelID
+            self.log("[RX] ch=\(String(format: "0x%04x", ch)) svc=\(svcID) type=\(message.header.messageType) err=\(message.header.hasError) len=\(message.payload.count)")
 
             // svc29: firmware session messages
             if svcID == FirmwareManager.serviceFirmware || (svcID == 0 && self.firmwareManager != nil) {
@@ -716,27 +726,27 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             }
 
             // svc18: Capture list messages
-            if svcID == 18 || (svcID == 0 && self.captureListService != nil) {
+            if svcID == CaptureListService.serviceCaptureList || (svcID == 0 && ch != 0 && self.captureListService?.channelID == ch) {
                 self.captureListService?.handleMessage(message, link: link)
             }
 
             // svc20: Airship file transfer — route to receiver for downloads FROM glasses
-            if svcID == 20 || svcID == 0 {
+            if svcID == AirshipReceiver.serviceAirship || (svcID == 0 && ch != 0 && self.airshipReceiver?.channelID == ch) {
                 self.airshipReceiver?.handleMessage(message, link: link)
             }
 
             // svc22: Clock sync response
-            if svcID == 22 || (svcID == 0 && self.clockSyncService != nil) {
+            if svcID == ClockSyncService.serviceClockSync || (svcID == 0 && ch != 0 && self.clockSyncService?.channelID == ch) {
                 self.clockSyncService?.handleMessage(message, link: link)
             }
 
             // svc28: Device status response
-            if svcID == 28 || (svcID == 0 && self.deviceStatusService != nil) {
+            if svcID == DeviceStatusService.serviceDeviceStatus || (svcID == 0 && ch != 0 && self.deviceStatusService?.channelID == ch) {
                 self.deviceStatusService?.handleMessage(message, link: link)
             }
 
-            // svc15: Assistant messages
-            if svcID == 15 || (svcID == 0 && self.assistantService != nil) {
+            // svc15: Assistant messages (glasses-initiated channel OR our response channel)
+            if svcID == AssistantService.serviceAssistant || (svcID == 0 && ch != 0 && self.assistantService != nil && (self.assistantService!.channelID == ch || self.assistantService!.incomingChannelID == ch)) {
                 self.assistantService?.handleMessage(message, link: link)
             }
         }

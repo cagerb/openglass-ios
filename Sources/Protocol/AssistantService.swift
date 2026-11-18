@@ -55,7 +55,8 @@ final class AssistantService: @unchecked Sendable {
     var log: ((String) -> Void)?
     var onRequest: (@Sendable (AssistantRequest) -> Void)?
 
-    private var channelID = 0
+    private(set) var channelID = 0
+    private(set) var incomingChannelID = 0
     private var firstMessage = true
     private var sessionActive = false
     private var recordingStartTime: Date?
@@ -94,6 +95,7 @@ final class AssistantService: @unchecked Sendable {
         currentAudio = []
         recordingStartTime = Date()
         phase = .listening
+        incomingChannelID = message.header.channelID
 
         if channelID == 0 {
             channelID = link.openChannel()
@@ -190,6 +192,7 @@ final class AssistantService: @unchecked Sendable {
         sessionActive = false
         recordingStartTime = nil
         channelID = 0
+        incomingChannelID = 0
         firstMessage = true
     }
 

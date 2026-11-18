@@ -189,7 +189,7 @@ final class CaptureListService: @unchecked Sendable {
     var onListComplete: (() -> Void)?
     var onDeleteResult: ((String, Bool) -> Void)?
 
-    private var channelID = 0
+    private(set) var channelID = 0
     private var firstMessage = true
     private weak var link: AirShieldLink?
 
