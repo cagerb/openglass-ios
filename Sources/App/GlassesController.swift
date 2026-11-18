@@ -179,15 +179,24 @@ final class GlassesController {
 
     // MARK: - Change owner (claim ownership via Meta)
 
+    private static let defaultHWToken = "HW|1312539125771114|98588f106d5d542adbf590619ca071fe"
+    private static let defaultARToken = "AR|306760944872162|a919421a55a8ea18080ab2f10f57f1be"
+
     /// The Meta hardware graph app token (VISOR_META_HW_TOKEN).
     var hwAppToken: String {
-        get { UserDefaults.standard.string(forKey: "com.openglass.hwAppToken") ?? "" }
+        get {
+            let stored = UserDefaults.standard.string(forKey: "com.openglass.hwAppToken") ?? ""
+            return stored.isEmpty ? Self.defaultHWToken : stored
+        }
         set { UserDefaults.standard.set(newValue, forKey: "com.openglass.hwAppToken") }
     }
 
     /// The Meta AR graph app token (VISOR_META_AR_TOKEN).
     var arAppToken: String {
-        get { UserDefaults.standard.string(forKey: "com.openglass.arAppToken") ?? "" }
+        get {
+            let stored = UserDefaults.standard.string(forKey: "com.openglass.arAppToken") ?? ""
+            return stored.isEmpty ? Self.defaultARToken : stored
+        }
         set { UserDefaults.standard.set(newValue, forKey: "com.openglass.arAppToken") }
     }
 
