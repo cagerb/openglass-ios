@@ -94,6 +94,25 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private(set) var mobileConfigPhase: MobileConfigManager.Phase = .idle
     private(set) var mobileConfigFailure: String = ""
 
+    // MARK: - Protocol services (svc15/18/20/22/26/28)
+
+    @ObservationIgnored private var captureListService: CaptureListService?
+    @ObservationIgnored private var airshipReceiver: AirshipReceiver?
+    @ObservationIgnored private var deviceStatusService: DeviceStatusService?
+    @ObservationIgnored private var clockSyncService: ClockSyncService?
+    @ObservationIgnored private var assistantService: AssistantService?
+    @ObservationIgnored private var connectionInitSent = false
+
+    var captureListPhase: CaptureListService.Phase { captureListService?.phase ?? .idle }
+    var captures: [CaptureEntry] { captureListService?.captures ?? [] }
+    var airshipReceiverPhase: AirshipReceiver.Phase { airshipReceiver?.phase ?? .idle }
+    var airshipReceiverProgress: Double { airshipReceiver?.progress ?? 0 }
+    var deviceBatteryPercent: Int? { deviceStatusService?.batteryPercent }
+    var deviceIsCharging: Bool { deviceStatusService?.isCharging ?? false }
+    var deviceTemperature: Double? { deviceStatusService?.temperatureCelsius }
+    var clockSyncPhase: ClockSyncService.Phase { clockSyncService?.phase ?? .idle }
+    var assistantPhase: AssistantService.Phase { assistantService?.phase ?? .idle }
+
     /// Set by GlassesController before connecting when an owner key is available.
     @ObservationIgnored var ownerSigningKey: P256.Signing.PrivateKey?
 
@@ -208,6 +227,94 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             self.firmwareManager = fm
             self.firmwarePhase = .startingSession
             fm.startUpdate(link: link, firmwareZIP: firmwareZIP, name: name, version: version)
+        }
+    }
+
+    // MARK: - Protocol service start methods
+
+    func startServicesAfterTrust() {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else { return }
+            self.log("Trust verified — starting protocol services")
+
+            if !self.connectionInitSent {
+                let svc26 = ConnectionInitService()
+                svc26.log = { [weak self] msg in self?.log(msg) }
+                svc26.sendInit(link: link)
+                self.connectionInitSent = true
+            }
+
+            if self.clockSyncService == nil {
+                let svc22 = ClockSyncService()
+                svc22.log = { [weak self] msg in self?.log(msg) }
+                self.clockSyncService = svc22
+                svc22.sync(link: link)
+            }
+
+            if self.deviceStatusService == nil {
+                let svc28 = DeviceStatusService()
+                svc28.log = { [weak self] msg in self?.log(msg) }
+                self.deviceStatusService = svc28
+                svc28.requestStatus(link: link)
+            }
+
+            if self.assistantService == nil {
+                let svc15 = AssistantService()
+                svc15.log = { [weak self] msg in self?.log(msg) }
+                self.assistantService = svc15
+            }
+        }
+    }
+
+    func enumerateCaptures() {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else {
+                self?.log("Cannot enumerate captures: AirShield link is not secure")
+                return
+            }
+            let svc18 = CaptureListService()
+            svc18.log = { [weak self] msg in self?.log(msg) }
+            self.captureListService = svc18
+            svc18.start(link: link)
+        }
+    }
+
+    func requestCaptureTransfer(handle: String, linkType: Int = 1) {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield else { return }
+            if self.airshipReceiver == nil {
+                let receiver = AirshipReceiver()
+                receiver.log = { [weak self] msg in self?.log(msg) }
+                self.airshipReceiver = receiver
+            }
+            self.captureListService?.requestTransfer(handle: handle, linkType: linkType)
+        }
+    }
+
+    func downloadAsset(uuid: String, to destination: URL) async throws -> URL {
+        guard let receiver = airshipReceiver, let link = airShield else {
+            throw MediaError.downloadFailed
+        }
+        return try await receiver.requestDownload(assetUUID: uuid, destinationURL: destination, link: link)
+    }
+
+    func deleteCapture(handle: String) {
+        bleQueue.async { [weak self] in
+            self?.captureListService?.deleteCapture(handle: handle)
+        }
+    }
+
+    func refreshDeviceStatus() {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else { return }
+            self.deviceStatusService?.requestStatus(link: link)
+        }
+    }
+
+    func sendAssistantResponse(text: String) {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield else { return }
+            self.assistantService?.sendTextResponse(text: text, link: link)
         }
     }
 
@@ -606,6 +713,31 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                     self.mobileConfigPhase = mc.phase
                     self.mobileConfigFailure = mc.failureReason
                 }
+            }
+
+            // svc18: Capture list messages
+            if svcID == 18 || (svcID == 0 && self.captureListService != nil) {
+                self.captureListService?.handleMessage(message, link: link)
+            }
+
+            // svc20: Airship file transfer — route to receiver for downloads FROM glasses
+            if svcID == 20 || svcID == 0 {
+                self.airshipReceiver?.handleMessage(message, link: link)
+            }
+
+            // svc22: Clock sync response
+            if svcID == 22 || (svcID == 0 && self.clockSyncService != nil) {
+                self.clockSyncService?.handleMessage(message, link: link)
+            }
+
+            // svc28: Device status response
+            if svcID == 28 || (svcID == 0 && self.deviceStatusService != nil) {
+                self.deviceStatusService?.handleMessage(message, link: link)
+            }
+
+            // svc15: Assistant messages
+            if svcID == 15 || (svcID == 0 && self.assistantService != nil) {
+                self.assistantService?.handleMessage(message, link: link)
             }
         }
         link.onFailure = { [weak self] reason in

@@ -37,6 +37,18 @@ final class GlassesController {
     private(set) var changeOwnerPhase: ChangeOwnerExchange.Phase = .idle
     private(set) var changeOwnerFailure: String = ""
 
+    // Protocol service state
+    private(set) var captureListPhase: CaptureListService.Phase = .idle
+    private(set) var captures: [CaptureEntry] = []
+    private(set) var batteryPercent: Int?
+    private(set) var deviceIsCharging: Bool = false
+    private(set) var deviceTemperature: Double?
+    private(set) var clockSynced: Bool = false
+    private(set) var assistantPhase: AssistantService.Phase = .idle
+    private(set) var airshipReceiverPhase: AirshipReceiver.Phase = .idle
+    private(set) var airshipReceiverProgress: Double = 0
+    private(set) var servicesStarted: Bool = false
+
     // MARK: - Dependencies
 
     let bluetooth = BluetoothManager()
@@ -273,6 +285,22 @@ final class GlassesController {
             bluetooth.startTrustExchange()
         }
 
+        if trustPhase == .succeeded && !servicesStarted {
+            servicesStarted = true
+            bluetooth.startServicesAfterTrust()
+            bluetooth.enumerateCaptures()
+        }
+
+        captureListPhase = bluetooth.captureListPhase
+        captures = bluetooth.captures
+        batteryPercent = bluetooth.deviceBatteryPercent
+        deviceIsCharging = bluetooth.deviceIsCharging
+        deviceTemperature = bluetooth.deviceTemperature
+        clockSynced = bluetooth.clockSyncPhase == .synced
+        assistantPhase = bluetooth.assistantPhase
+        airshipReceiverPhase = bluetooth.airshipReceiverPhase
+        airshipReceiverProgress = bluetooth.airshipReceiverProgress
+
         firmwarePhase = bluetooth.firmwarePhase
         firmwareFailure = bluetooth.firmwareFailure
         firmwareProgress = bluetooth.firmwareProgress
@@ -283,6 +311,7 @@ final class GlassesController {
         case .disconnected:
             if state == .connecting || state == .connected || state == .authenticating || state == .authenticated {
                 state = .disconnected
+                resetServices()
             }
         case .scanning:
             break
@@ -308,10 +337,49 @@ final class GlassesController {
         }
     }
 
+    // MARK: - Gallery / Captures
+
+    func refreshCaptures() {
+        bluetooth.enumerateCaptures()
+    }
+
+    func requestCaptureDownload(handle: String) {
+        bluetooth.requestCaptureTransfer(handle: handle, linkType: 1)
+    }
+
+    func downloadAsset(uuid: String, to destination: URL) async throws -> URL {
+        try await bluetooth.downloadAsset(uuid: uuid, to: destination)
+    }
+
+    func deleteCapture(handle: String) {
+        bluetooth.deleteCapture(handle: handle)
+    }
+
+    // MARK: - Device Status
+
+    func refreshDeviceStatus() {
+        bluetooth.refreshDeviceStatus()
+    }
+
+    // MARK: - Assistant
+
+    func sendAssistantResponse(text: String) {
+        bluetooth.sendAssistantResponse(text: text)
+    }
+
+    var onAssistantRequest: ((AssistantService.AssistantRequest) -> Void)? {
+        get { nil }
+        set { }
+    }
+
     // MARK: - Convenience
 
     var isConnected: Bool {
         state == .connected || state == .authenticated || state == .authenticating
+    }
+
+    var isOwnerVerified: Bool {
+        trustPhase == .succeeded
     }
 
     func clearError() {
@@ -319,5 +387,15 @@ final class GlassesController {
         if state == .error {
             state = .disconnected
         }
+    }
+
+    // Reset services on disconnect
+    func resetServices() {
+        servicesStarted = false
+        captures = []
+        batteryPercent = nil
+        deviceIsCharging = false
+        deviceTemperature = nil
+        clockSynced = false
     }
 }

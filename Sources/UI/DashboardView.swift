@@ -36,6 +36,8 @@ struct DashboardView: View {
                             ownershipCard
 
                             if controller.trustPhase == .succeeded {
+                                servicesStatusCard
+                                capturesCard
                                 firmwareCard
                                 mobileConfigCard
                             }
@@ -320,11 +322,17 @@ struct DashboardView: View {
                 Text("Battery")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                if let pct = controller.bluetooth.batteryLevel {
-                    Text("\(pct)%")
-                        .font(.title)
-                        .fontWeight(.semibold)
-                        .monospacedDigit()
+                if let pct = controller.batteryPercent ?? controller.bluetooth.batteryLevel {
+                    HStack(spacing: 6) {
+                        Text("\(pct)%")
+                            .font(.title)
+                            .fontWeight(.semibold)
+                            .monospacedDigit()
+                        if controller.deviceIsCharging {
+                            Image(systemName: "bolt.fill")
+                                .foregroundStyle(.green)
+                        }
+                    }
                 } else {
                     Text("--")
                         .font(.title)
@@ -333,6 +341,18 @@ struct DashboardView: View {
             }
 
             Spacer()
+
+            if let temp = controller.deviceTemperature {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Temp")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(String(format: "%.0f°C", temp))
+                        .font(.title3)
+                        .monospacedDigit()
+                        .foregroundStyle(temp > 45 ? .red : .primary)
+                }
+            }
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -356,6 +376,123 @@ struct DashboardView: View {
 
             ProgressView(value: glasses.storageFraction)
                 .tint(glasses.storageFraction > 0.9 ? .red : .blue)
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Services status card
+
+    private var servicesStatusCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "checklist")
+                    .foregroundStyle(.blue)
+                Text("Services")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    controller.refreshDeviceStatus()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                serviceRow("Clock Sync", phase: controller.clockSynced ? "Synced" : "Pending",
+                           icon: "clock", color: controller.clockSynced ? .green : .orange)
+                serviceRow("Status", phase: controller.batteryPercent != nil ? "Active" : "Pending",
+                           icon: "heart.text.clipboard", color: controller.batteryPercent != nil ? .green : .orange)
+                serviceRow("Gallery", phase: capturePhaseLabel,
+                           icon: "photo.stack", color: controller.captureListPhase == .done ? .green : .orange)
+                serviceRow("Assistant", phase: controller.assistantPhase.rawValue,
+                           icon: "brain", color: controller.assistantPhase == .idle ? .green : .blue)
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func serviceRow(_ name: String, phase: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                Text(phase)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(8)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var capturePhaseLabel: String {
+        switch controller.captureListPhase {
+        case .idle: return "Idle"
+        case .enumerating: return "Loading..."
+        case .done: return "\(controller.captures.count) captures"
+        case .failed: return "Failed"
+        }
+    }
+
+    // MARK: - Captures card
+
+    private var capturesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "photo.stack.fill")
+                    .foregroundStyle(.purple)
+                Text("Captures")
+                    .font(.headline)
+                Spacer()
+
+                if controller.captureListPhase == .enumerating {
+                    ProgressView()
+                } else {
+                    Button {
+                        controller.refreshCaptures()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+            }
+
+            if controller.captures.isEmpty {
+                if controller.captureListPhase == .done {
+                    Text("No captures on glasses")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 12)
+                }
+            } else {
+                let photos = controller.captures.filter { $0.kind == 3073 }
+                let videos = controller.captures.filter { $0.kind == 3074 }
+
+                HStack(spacing: 16) {
+                    Label("\(photos.count) photos", systemImage: "photo")
+                        .font(.subheadline)
+                    Label("\(videos.count) videos", systemImage: "video")
+                        .font(.subheadline)
+                }
+                .foregroundStyle(.secondary)
+
+                if controller.airshipReceiverPhase == .receiving {
+                    VStack(spacing: 4) {
+                        ProgressView(value: controller.airshipReceiverProgress)
+                            .tint(.purple)
+                        Text("Downloading...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -942,7 +1079,9 @@ struct DashboardView: View {
     }
 
     private var batteryIcon: String {
-        guard let pct = controller.bluetooth.batteryLevel else { return "battery.0percent" }
+        let pct = controller.batteryPercent ?? controller.bluetooth.batteryLevel
+        guard let pct else { return "battery.0percent" }
+        if controller.deviceIsCharging { return "battery.100percent.bolt" }
         switch pct {
         case 76...100: return "battery.100percent"
         case 51...75: return "battery.75percent"
@@ -953,7 +1092,8 @@ struct DashboardView: View {
     }
 
     private var batteryColor: Color {
-        guard let pct = controller.bluetooth.batteryLevel else { return .secondary }
+        let pct = controller.batteryPercent ?? controller.bluetooth.batteryLevel
+        guard let pct else { return .secondary }
         switch pct {
         case 51...100: return .green
         case 21...50: return .orange
