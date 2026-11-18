@@ -291,12 +291,7 @@ final class ProtocolStressTester {
     // MARK: - Export
 
     func exportAnomaliesJSON() async -> String {
-        let entries = await anomalyDetector.exportJSON()
-        guard let data = try? JSONSerialization.data(withJSONObject: entries, options: [.prettyPrinted, .sortedKeys]),
-              let string = String(data: data, encoding: .utf8) else {
-            return "[]"
-        }
-        return string
+        await anomalyDetector.exportJSONString()
     }
 
     var elapsedTime: TimeInterval {

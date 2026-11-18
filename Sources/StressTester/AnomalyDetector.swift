@@ -74,21 +74,21 @@ public actor AnomalyDetector {
 
     public var count: Int { anomalies.count }
 
-    /// Export all anomalies as a JSON-compatible array of dictionaries.
-    public func exportJSON() -> [[String: Any]] {
+    /// Export all anomalies as a JSON string.
+    public func exportJSONString() -> String {
         let formatter = ISO8601DateFormatter()
-        return anomalies.map { anomaly in
-            var dict: [String: Any] = [
+        let entries: [[String: String]] = anomalies.map { anomaly in
+            var dict: [String: String] = [
                 "type": anomaly.label,
                 "severity": anomaly.severity.rawValue,
-                "packetIndex": anomaly.packetIndex,
+                "packetIndex": "\(anomaly.packetIndex)",
                 "timestamp": formatter.string(from: anomaly.timestamp),
             ]
             switch anomaly {
             case .responseTimeout(_, let waited, _):
-                dict["waitedSeconds"] = waited
+                dict["waitedSeconds"] = "\(waited)"
             case .glassesMissing(_, let missing, _):
-                dict["missingForSeconds"] = missing
+                dict["missingForSeconds"] = "\(missing)"
             case .unexpectedData(_, let data, _):
                 dict["dataHex"] = data.map { String(format: "%02x", $0) }.joined()
             default:
@@ -96,5 +96,10 @@ public actor AnomalyDetector {
             }
             return dict
         }
+        guard let data = try? JSONSerialization.data(withJSONObject: entries, options: [.prettyPrinted, .sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return string
     }
 }
