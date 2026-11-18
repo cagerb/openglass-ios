@@ -34,6 +34,9 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private let dataXLink = DataXLink()
     private let logger = Logger(subsystem: "com.openglass.app", category: "Bluetooth")
 
+    /// UserDefaults key for persisting previously-seen peripheral identifiers.
+    private static let knownPeripheralIDsKey = "com.openglass.knownPeripheralIDs"
+
     /// Callback for complete reassembled DataX messages.
     var onDataXMessage: ((Data) -> Void)?
 
@@ -57,11 +60,16 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         }
         discoveredPeripherals.removeAll()
         connectionState = .scanning
+
+        // Scan with nil services so we see ALL nearby BLE devices.
+        // After factory reset + iOS-level pairing the glasses may stop
+        // advertising the FD5F service UUID, making a filtered scan miss them.
+        // Name filtering in didDiscover still limits results to "RB*" devices.
         centralManager.scanForPeripherals(
-            withServices: [GATTConstants.metaServiceUUID],
+            withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
-        logger.info("Started scanning for glasses (service FD5F)")
+        logger.info("Started scanning for glasses (unfiltered, name-matched)")
 
         // Pick up glasses already connected at the iOS system level (they
         // stop advertising once paired, so scanForPeripherals won't find them).
@@ -69,9 +77,18 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             withServices: [GATTConstants.metaServiceUUID]
         )
         for peripheral in alreadyConnected {
-            if !discoveredPeripherals.contains(where: { $0.identifier == peripheral.identifier }) {
-                discoveredPeripherals.append(peripheral)
-                logger.info("Found system-connected peripheral: \(peripheral.name ?? "unknown")")
+            addDiscoveredPeripheral(peripheral, source: "system-connected")
+        }
+
+        // Re-discover previously-seen glasses by their saved identifiers.
+        // retrievePeripherals(withIdentifiers:) works even when the device
+        // is neither advertising nor system-connected — iOS returns a
+        // CBPeripheral handle if it has ever bonded with that identifier.
+        let knownIDs = Self.loadKnownPeripheralIDs()
+        if !knownIDs.isEmpty {
+            let knownPeripherals = centralManager.retrievePeripherals(withIdentifiers: knownIDs)
+            for peripheral in knownPeripherals {
+                addDiscoveredPeripheral(peripheral, source: "known-identifier")
             }
         }
     }
@@ -117,6 +134,31 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    /// De-duplicate and append a peripheral to the discovered list.
+    private func addDiscoveredPeripheral(_ peripheral: CBPeripheral, source: String) {
+        if !discoveredPeripherals.contains(where: { $0.identifier == peripheral.identifier }) {
+            discoveredPeripherals.append(peripheral)
+            logger.info("Found peripheral (\(source)): \(peripheral.name ?? "unknown")")
+        }
+    }
+
+    /// Persist a peripheral identifier so we can retrieve it in future scans.
+    private func saveKnownPeripheralID(_ id: UUID) {
+        var ids = Self.loadKnownPeripheralIDs()
+        guard !ids.contains(id) else { return }
+        ids.append(id)
+        let strings = ids.map { $0.uuidString }
+        UserDefaults.standard.set(strings, forKey: Self.knownPeripheralIDsKey)
+    }
+
+    /// Load all previously-seen peripheral identifiers.
+    private static func loadKnownPeripheralIDs() -> [UUID] {
+        guard let strings = UserDefaults.standard.stringArray(forKey: knownPeripheralIDsKey) else {
+            return []
+        }
+        return strings.compactMap { UUID(uuidString: $0) }
+    }
 
     private func cleanup() {
         connectedPeripheral = nil
@@ -165,16 +207,16 @@ extension BluetoothManager: CBCentralManagerDelegate {
                          advertisementData: [String: Any],
                          rssi RSSI: NSNumber) {
         let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
-        guard name.isEmpty || name.hasPrefix(GATTConstants.deviceNamePrefix) else { return }
-        if !discoveredPeripherals.contains(where: { $0.identifier == peripheral.identifier }) {
-            discoveredPeripherals.append(peripheral)
-            logger.info("Discovered: \(name) RSSI=\(RSSI)")
-        }
+        // With unfiltered scanning we see every nearby BLE device.
+        // Only accept devices whose name starts with the glasses prefix.
+        guard !name.isEmpty, name.hasPrefix(GATTConstants.deviceNamePrefix) else { return }
+        addDiscoveredPeripheral(peripheral, source: "scan RSSI=\(RSSI)")
     }
 
     func centralManager(_ central: CBCentralManager,
                          didConnect peripheral: CBPeripheral) {
         logger.info("Connected to \(peripheral.name ?? "unknown")")
+        saveKnownPeripheralID(peripheral.identifier)
         discoverAllServices()
     }
 
