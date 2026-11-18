@@ -481,7 +481,7 @@ struct DashboardView: View {
                         ARTokenField()
                         Text("HW Token").font(.caption2).foregroundStyle(.secondary)
                         HWTokenField()
-                        Text("Extract VISOR_META_AR_TOKEN and VISOR_META_HW_TOKEN from Visor's local.properties or the Meta AI APK.")
+                        Text("Pre-filled from Visor. Override here if needed.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
