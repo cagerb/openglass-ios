@@ -54,7 +54,8 @@ final class FirmwareManager {
         self.firmwareData = firmwareZIP
         self.firmwareName = name
         self.firmwareVersion = version
-        self.requestUUID = Array(UUID().uuid).prefix(16).map { $0 }
+        let id = UUID()
+        self.requestUUID = withUnsafeBytes(of: id.uuid) { Array($0) }
 
         channelID = link.openChannel()
         phase = .startingSession

@@ -131,11 +131,12 @@ final class MobileConfigManager {
         }
         self.airshipSender = sender
 
-        let uuid = Array(UUID().uuid).prefix(16)
+        let id = UUID()
+        let uuid = withUnsafeBytes(of: id.uuid) { Array($0) }
         sender.start(
             link: link,
             data: zipData,
-            uuid: Array(uuid),
+            uuid: uuid,
             namespace: "mobileconfig",
             basename: filename
         )
