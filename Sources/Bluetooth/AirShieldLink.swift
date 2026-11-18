@@ -356,7 +356,7 @@ struct AirShieldFrameCipher {
 ///
 /// Not thread-safe: feed it and call it from one queue. It does no I/O of its own;
 /// outgoing bytes leave through `send`, incoming bytes arrive through `feed`.
-final class AirShieldLink {
+final class AirShieldLink: @unchecked Sendable {
 
     enum Phase: String {
         case idle
