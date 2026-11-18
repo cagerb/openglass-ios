@@ -1,5 +1,5 @@
 import Foundation
-import Security
+@preconcurrency import Security
 import os
 
 /// Keychain-backed storage for the phone's RSA identity, bootstrap ticket,

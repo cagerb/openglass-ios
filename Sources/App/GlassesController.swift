@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+@preconcurrency import Security
 import SwiftUI
 import os
 

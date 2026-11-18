@@ -1,5 +1,5 @@
 import Foundation
-import Security
+@preconcurrency import Security
 import os
 
 /// RSA-OAEP SHA-256 operations for the initial authentication handshake.
