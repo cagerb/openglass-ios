@@ -15,7 +15,7 @@ struct DashboardView: View {
                 VStack(spacing: 20) {
                     connectionCard
 
-                    if !controller.hasIdentity && controller.state == .connected {
+                    if !controller.hasIdentity && controller.state == .connected && !controller.bluetooth.isL2CAPMode {
                         identityWarning
                     }
 
@@ -138,13 +138,26 @@ struct DashboardView: View {
                 .buttonStyle(.bordered)
 
             case .connected:
-                Button {
-                    Task { await controller.authenticate() }
-                } label: {
-                    Text(controller.hasIdentity ? "Authenticate" : "Pair as New Device")
-                        .frame(maxWidth: .infinity)
+                if controller.bluetooth.isAirShieldSecure {
+                    Label("AirShield Secure", systemImage: "checkmark.shield.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(.green)
+                } else if controller.bluetooth.isL2CAPMode {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Setting up AirShield...")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button {
+                        Task { await controller.authenticate() }
+                    } label: {
+                        Text(controller.hasIdentity ? "Authenticate" : "Pair as New Device")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
 
             default:
                 EmptyView()
@@ -783,6 +796,7 @@ struct DashboardView: View {
         case .disconnected: return "Scan to find your glasses"
         case .scanning: return "Looking for Ray-Ban glasses nearby"
         case .connecting: return "Establishing BLE connection"
+        case .connected where controller.bluetooth.isAirShieldSecure: return "Encrypted link established"
         case .connected where controller.hasIdentity: return "Ready to authenticate"
         case .connected: return "Ready to pair as new device"
         case .authenticating: return "Running PhaseB handshake"

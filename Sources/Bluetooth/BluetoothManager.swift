@@ -122,6 +122,43 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     /// Whether the AirShield link is in the secure phase.
     var isAirShieldSecure: Bool { airShieldSecure }
 
+    /// Whether the glasses use the L2CAP + AirShield path (gen 2+) instead of GATT DataX (gen 1).
+    var isL2CAPMode: Bool { usesL2CAP }
+
+    /// Start the trust exchange right now (called after importing the owner key when AirShield is already secure).
+    func startTrustExchange() {
+        bleQueue.async { [weak self] in
+            guard let self, let link = self.airShield, link.phase == .secure else {
+                self?.log("Cannot start trust exchange: AirShield link is not secure")
+                return
+            }
+            guard self.trustExchange == nil || self.trustPhase == .idle || self.trustPhase == .failed else {
+                self.log("Trust exchange already in progress (\(self.trustPhase.rawValue))")
+                return
+            }
+            guard let key = self.ownerSigningKey else {
+                self.log("Cannot start trust exchange: no owner key loaded")
+                return
+            }
+            guard let peer = link.peerRequest else {
+                self.log("No peer handshake params yet — requesting identity first")
+                link.requestIdentity()
+                return
+            }
+            let params = OwnerTrustExchange.HandshakeParams(
+                glassesChallenge: peer.challenge,
+                glassesPubkey: peer.publicKey,
+                ourSeed: link.mySeed,
+                ourPubkey: Array(link.privateKey.publicKey.rawRepresentation)
+            )
+            let exchange = OwnerTrustExchange()
+            exchange.log = { [weak self] msg in self?.log(msg) }
+            self.trustExchange = exchange
+            self.trustPhase = .proving
+            exchange.start(link: link, params: params, ownerKey: key)
+        }
+    }
+
     /// Start the ownership forgery attempt on the current AirShield link.
     func startOwnershipForgery() {
         bleQueue.async { [weak self] in

@@ -160,6 +160,9 @@ final class GlassesController {
     func importOwnerKey(from data: Data) async throws {
         try await ownerKeyStore.importFromGLink(data)
         await loadOwnerKey()
+        if bluetooth.isAirShieldSecure {
+            bluetooth.startTrustExchange()
+        }
     }
 
     func deleteOwnerKey() async {
@@ -233,8 +236,9 @@ final class GlassesController {
                 state = .connecting
             }
         case .connected:
-            if state == .connecting {
+            if state == .connecting || state == .authenticating || state == .error {
                 state = .connected
+                lastError = nil
             }
         case .authenticated:
             break
