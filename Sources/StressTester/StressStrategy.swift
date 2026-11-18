@@ -380,6 +380,115 @@ struct RepeatedIdentityStrategy: StressStrategy {
     }
 }
 
+// MARK: - 14. SizeProbeStrategy
+
+/// Narrow the oversized-frame crash zone: 2048 to 2560 bytes in 1-byte increments.
+struct SizeProbeStrategy: StressStrategy {
+    let name = "Size Probe 2K-2.5K"
+    let description = "Probe 2048-2560 bytes in 1-byte steps to find exact crash threshold"
+    let totalCases: Int? = 513  // 2048...2560 inclusive
+
+    func generate(index: Int) -> StressTestCase {
+        let size = 2048 + index
+        return StressTestCase(
+            layer: "raw_l2cap",
+            bytes: randomBytes(size),
+            description: "Size probe: \(size) bytes"
+        )
+    }
+}
+
+// MARK: - 15. CrashConfirmStrategy
+
+/// Send the crashing size (2560 bytes) 20 times to test consistency.
+struct CrashConfirmStrategy: StressStrategy {
+    let name = "Crash Confirm 2560"
+    let description = "Send 2560 bytes 20 times to confirm reproducibility"
+    let totalCases: Int? = 20
+
+    func generate(index: Int) -> StressTestCase {
+        StressTestCase(
+            layer: "raw_l2cap",
+            bytes: randomBytes(2560),
+            description: "Crash confirm: 2560 bytes (attempt \(index + 1)/20)"
+        )
+    }
+}
+
+// MARK: - 16. ContentProbeStrategy
+
+/// At the crashing size (2560 bytes), vary content to see if it's size-only or content-dependent.
+struct ContentProbeStrategy: StressStrategy {
+    let name = "Content Probe 2560"
+    let description = "2560 bytes with different fill patterns to isolate size vs content"
+    let totalCases: Int? = 10
+
+    func generate(index: Int) -> StressTestCase {
+        let size = 2560
+        let bytes: [UInt8]
+        let desc: String
+
+        switch index {
+        case 0:
+            bytes = [UInt8](repeating: 0x00, count: size)
+            desc = "2560 bytes: all zeros"
+        case 1:
+            bytes = [UInt8](repeating: 0xFF, count: size)
+            desc = "2560 bytes: all 0xFF"
+        case 2:
+            bytes = [UInt8](repeating: 0xAA, count: size)
+            desc = "2560 bytes: all 0xAA"
+        case 3:
+            // Valid DATA frame header (0x40) followed by fill
+            bytes = [0x40] + [UInt8](repeating: 0x00, count: size - 1)
+            desc = "2560 bytes: 0x40 header + zeros"
+        case 4:
+            // Valid control frame header (0x80) followed by fill
+            bytes = [0x80] + [UInt8](repeating: 0x00, count: size - 1)
+            desc = "2560 bytes: 0x80 header + zeros"
+        case 5:
+            // Sequential bytes 0x00-0xFF repeating
+            bytes = (0..<size).map { UInt8($0 & 0xFF) }
+            desc = "2560 bytes: sequential pattern"
+        case 6:
+            bytes = randomBytes(size)
+            desc = "2560 bytes: random #1"
+        case 7:
+            bytes = randomBytes(size)
+            desc = "2560 bytes: random #2"
+        case 8:
+            bytes = randomBytes(size)
+            desc = "2560 bytes: random #3"
+        case 9:
+            bytes = randomBytes(size)
+            desc = "2560 bytes: random #4"
+        default:
+            bytes = randomBytes(size)
+            desc = "2560 bytes: random overflow"
+        }
+
+        return StressTestCase(layer: "raw_l2cap", bytes: bytes, description: desc)
+    }
+}
+
+// MARK: - 17. SecondCrashProbeStrategy
+
+/// Narrow the second crash zone: 6144 to 6656 bytes in 32-byte increments.
+struct SecondCrashProbeStrategy: StressStrategy {
+    let name = "Size Probe 6K-6.5K"
+    let description = "Probe 6144-6656 bytes in 32-byte steps for the second crash zone"
+    let totalCases: Int? = 17  // (6656 - 6144) / 32 + 1
+
+    func generate(index: Int) -> StressTestCase {
+        let size = 6144 + (index * 32)
+        return StressTestCase(
+            layer: "raw_l2cap",
+            bytes: randomBytes(size),
+            description: "Size probe: \(size) bytes"
+        )
+    }
+}
+
 // MARK: - All strategies
 
 enum StressStrategies {
@@ -397,5 +506,9 @@ enum StressStrategies {
         KnownServiceTypeStrategy(),
         LargePayloadStrategy(),
         RepeatedIdentityStrategy(),
+        SizeProbeStrategy(),
+        CrashConfirmStrategy(),
+        ContentProbeStrategy(),
+        SecondCrashProbeStrategy(),
     ]
 }
