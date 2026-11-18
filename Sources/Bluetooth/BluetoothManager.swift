@@ -77,8 +77,12 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private(set) var trustPhase: OwnerTrustExchange.Phase = .idle
     private(set) var trustFailure: String = ""
 
-    private(set) var changeOwnerPhase: ChangeOwnerExchange.Phase = .idle
-    private(set) var changeOwnerFailure: String = ""
+    var changeOwnerPhase: ChangeOwnerExchange.Phase {
+        changeOwner?.phase ?? .idle
+    }
+    var changeOwnerFailure: String {
+        changeOwner?.failureReason ?? ""
+    }
 
     @ObservationIgnored private var firmwareManager: FirmwareManager?
     @ObservationIgnored private var mobileConfigManager: MobileConfigManager?
@@ -173,7 +177,6 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             let co = ChangeOwnerExchange()
             co.log = { [weak self] msg in self?.log(msg) }
             self.changeOwner = co
-            self.changeOwnerPhase = .requestingIdentity
             co.start(link: link, ownerPubkey64: ownerPubkey64, tokens: tokens, metaAuth: metaAuth)
         }
     }
@@ -492,8 +495,6 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 self.trustPhase = .idle
                 self.trustFailure = ""
                 self.changeOwner = nil
-                self.changeOwnerPhase = .idle
-                self.changeOwnerFailure = ""
                 self.firmwareManager = nil
                 self.firmwarePhase = .idle
                 self.firmwareFailure = ""
@@ -534,8 +535,6 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             if let co = self.changeOwner, co.phase != .idle && co.phase != .failed && co.phase != .succeeded {
                 if isSvc36 {
                     co.handleMessage(message, link: link)
-                    self.changeOwnerPhase = co.phase
-                    self.changeOwnerFailure = co.failureReason
                 }
                 return
             }
