@@ -109,7 +109,6 @@ final class DeviceStatusService: @unchecked Sendable {
             temperatureCelsius = Double(tempRaw) / 1000.0
         }
         deviceState = voltage
-        deviceState = state
 
         phase = .received
         emit("Battery: \(battery)%, charging: \(isCharging), temp: \(temperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "unknown"), voltage: \(voltage)mV")

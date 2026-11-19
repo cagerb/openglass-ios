@@ -345,10 +345,10 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private func handleAssistantRequest(_ request: AssistantService.AssistantRequest) {
         log("[Assistant] Received request: \(request.audioChunks.count) chunks, \(request.audioChunks.reduce(0) { $0 + $1.count }) bytes")
 
-        let claude = ClaudeAPIClient()
         Task {
+            let claude = ClaudeAPIClient()
             do {
-                guard claude.hasAPIKey else {
+                guard !ClaudeAPIClient.apiKey.isEmpty else {
                     self.log("[Assistant] No API key — sending fallback")
                     self.bleQueue.async { [weak self] in
                         guard let self, let link = self.airShield else { return }
