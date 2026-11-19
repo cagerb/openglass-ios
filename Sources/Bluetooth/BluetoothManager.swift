@@ -279,6 +279,9 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         if self.assistantService == nil {
             let svc15 = AssistantService()
             svc15.log = { [weak self] msg in self?.log(msg) }
+            svc15.onRequest = { [weak self] request in
+                self?.handleAssistantRequest(request)
+            }
             self.assistantService = svc15
         }
     }
@@ -287,6 +290,10 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         bleQueue.async { [weak self] in
             guard let self, let link = self.airShield, link.phase == .secure else {
                 self?.log("Cannot enumerate captures: AirShield link is not secure")
+                return
+            }
+            if let existing = self.captureListService, existing.isEnumerating {
+                self.log("[CaptureList] Enumeration already in progress, skipping")
                 return
             }
             let svc18 = CaptureListService()
@@ -332,6 +339,45 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         bleQueue.async { [weak self] in
             guard let self, let link = self.airShield else { return }
             self.assistantService?.sendTextResponse(text: text, link: link)
+        }
+    }
+
+    private func handleAssistantRequest(_ request: AssistantService.AssistantRequest) {
+        log("[Assistant] Received request: \(request.audioChunks.count) chunks, \(request.audioChunks.reduce(0) { $0 + $1.count }) bytes")
+
+        let claude = ClaudeAPIClient()
+        Task {
+            do {
+                guard claude.hasAPIKey else {
+                    self.log("[Assistant] No API key — sending fallback")
+                    self.bleQueue.async { [weak self] in
+                        guard let self, let link = self.airShield else { return }
+                        self.assistantService?.sendFullTextResponse(
+                            text: "Claude is connected but no API key is set. Add one in OpenGlass settings.",
+                            link: link
+                        )
+                    }
+                    return
+                }
+                let response = try await claude.chat(
+                    messages: [ClaudeAPIClient.Message(role: "user", content: "The user just spoke to you through their Ray-Ban Meta glasses. Audio transcription is not available yet, so greet them briefly and let them know voice input is working.")],
+                    systemPrompt: "You are Claude, an AI assistant running on the user's smart glasses via OpenGlass. Keep responses under 2 sentences — they will be spoken aloud through the glasses' speakers."
+                )
+                self.bleQueue.async { [weak self] in
+                    guard let self, let link = self.airShield else { return }
+                    self.assistantService?.sendFullTextResponse(text: response, link: link)
+                    self.log("[Assistant] Sent Claude response to glasses")
+                }
+            } catch {
+                self.log("[Assistant] Claude API error: \(error.localizedDescription)")
+                self.bleQueue.async { [weak self] in
+                    guard let self, let link = self.airShield else { return }
+                    self.assistantService?.sendFullTextResponse(
+                        text: "Sorry, I couldn't process that. \(error.localizedDescription)",
+                        link: link
+                    )
+                }
+            }
         }
     }
 

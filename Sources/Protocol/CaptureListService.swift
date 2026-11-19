@@ -317,25 +317,29 @@ final class CaptureListService: @unchecked Sendable {
         let reader = FlatBufferReader(buffer: payload)
         guard let root = reader.rootTable() else { return nil }
 
-        let handle = root.string(slot: 4) ?? ""
+        // Root slot 4 → info sub-table (NOT the handle directly)
+        guard let info = root.subTable(slot: 4) else { return nil }
+
+        let handle = info.string(slot: 4) ?? ""
         guard !handle.isEmpty else { return nil }
 
-        let kind = Int(root.uint16(slot: 8) ?? 0)
+        let kind = Int(info.uint32(slot: 8) ?? 0)
 
-        // Parse metadata sub-table (slot 12)
+        // Meta table is at info slot 12
         var timestampNanos: UInt64 = 0
         var isLandscape = false
-        if let meta = root.subTable(slot: 12) {
+        if let meta = info.subTable(slot: 12) {
             timestampNanos = meta.uint64(slot: 4) ?? 0
             isLandscape = meta.bool(slot: 34) ?? false
         }
 
-        // Parse asset vector (slot 10)
-        let assetCount = root.vectorCount(slot: 10)
+        // Asset vector is at info slot 10
+        let assetCount = info.vectorCount(slot: 10)
         var assets: [AssetEntry] = []
         for i in 0..<assetCount {
-            if let assetTable = root.vectorElement(slot: 10, index: i) {
+            if let assetTable = info.vectorElement(slot: 10, index: i) {
                 let uuid = assetTable.string(slot: 4) ?? ""
+                guard !uuid.isEmpty else { continue }
                 let typeCode = assetTable.uint32(slot: 6) ?? 0
                 let sizeBytes = assetTable.uint64(slot: 12) ?? 0
                 assets.append(AssetEntry(uuid: uuid, typeCode: typeCode, sizeBytes: sizeBytes))

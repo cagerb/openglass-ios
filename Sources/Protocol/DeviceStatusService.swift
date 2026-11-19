@@ -98,30 +98,31 @@ final class DeviceStatusService: @unchecked Sendable {
         // Parse the inner stateCommon
         let inner = ProtoWire.parse(stateCommonBytes)
 
-        let battery = Int(inner.varint(1))
         let charging = inner.varint(2)
-        let tempRaw = inner.varint(3)
-        let state = UInt32(inner.varint(5))
+        let battery = Int(inner.varint(3))
+        let tempRaw = inner.varint(4)
+        let voltage = UInt32(inner.varint(5))
 
         batteryPercent = battery
         isCharging = charging != 0
         if tempRaw > 0 {
-            temperatureCelsius = Double(tempRaw) / 10.0
+            temperatureCelsius = Double(tempRaw) / 1000.0
         }
+        deviceState = voltage
         deviceState = state
 
         phase = .received
-        emit("Battery: \(battery)%, charging: \(isCharging), temp: \(temperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "unknown"), state: \(state)")
+        emit("Battery: \(battery)%, charging: \(isCharging), temp: \(temperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "unknown"), voltage: \(voltage)mV")
     }
 
     private func parseFlatStatus(_ fields: ProtoWire.Fields) {
-        let battery = Int(fields.varint(1))
+        let battery = Int(fields.varint(3))
         if battery > 0 && battery <= 100 {
             batteryPercent = battery
             isCharging = fields.varint(2) != 0
-            let tempRaw = fields.varint(3)
+            let tempRaw = fields.varint(4)
             if tempRaw > 0 {
-                temperatureCelsius = Double(tempRaw) / 10.0
+                temperatureCelsius = Double(tempRaw) / 1000.0
             }
             deviceState = UInt32(fields.varint(5))
             phase = .received
