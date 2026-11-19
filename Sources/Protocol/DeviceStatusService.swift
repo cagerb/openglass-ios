@@ -37,9 +37,9 @@ final class DeviceStatusService: @unchecked Sendable {
     private(set) var channelID: Int = 0
     private var firstMessage = true
 
-    // MARK: - Request
+    // MARK: - Subscribe
 
-    func requestStatus(link: AirShieldLink) {
+    func subscribe(link: AirShieldLink) {
         if channelID == 0 {
             channelID = link.openChannel()
             firstMessage = true
@@ -47,9 +47,9 @@ final class DeviceStatusService: @unchecked Sendable {
 
         phase = .requesting
 
-        // CompanionDeviceInit: field 1 = varint 1, field 2 = interaction key
+        // CompanionDeviceInit: field 1 = packed varint [1], field 2 = interaction key
         let interactionKey = UUID().uuidString
-        var payload = ProtoWire.field(1, varint: 1)
+        var payload = ProtoWire.field(1, bytes: ProtoWire.varint(1))
         payload += ProtoWire.field(2, bytes: Array(interactionKey.utf8))
 
         emit("Subscribing to device state (svc28 type 1000, key=\(interactionKey.prefix(8))...)")

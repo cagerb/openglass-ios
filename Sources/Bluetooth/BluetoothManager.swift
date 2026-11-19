@@ -94,13 +94,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private(set) var mobileConfigPhase: MobileConfigManager.Phase = .idle
     private(set) var mobileConfigFailure: String = ""
 
-    // MARK: - Protocol services (svc15/18/20/22/28)
+    // MARK: - Protocol services (svc15/18/20/22/28/100)
 
     @ObservationIgnored private var captureListService: CaptureListService?
     @ObservationIgnored private var airshipReceiver: AirshipReceiver?
     @ObservationIgnored private var deviceStatusService: DeviceStatusService?
     @ObservationIgnored private var clockSyncService: ClockSyncService?
     @ObservationIgnored private var assistantService: AssistantService?
+    @ObservationIgnored private var peerBuildInfoService: PeerBuildInfoService?
     @ObservationIgnored private var endLinkSetupDone = false
 
     var captureListPhase: CaptureListService.Phase { captureListService?.phase ?? .idle }
@@ -252,6 +253,15 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     }
 
     private func startRemainingServices(link: AirShieldLink) {
+        // svc100 must go first: announces the phone as a peer so the glasses
+        // know what services to serve.
+        if self.peerBuildInfoService == nil {
+            let svc100 = PeerBuildInfoService()
+            svc100.log = { [weak self] msg in self?.log(msg) }
+            self.peerBuildInfoService = svc100
+            svc100.announce(link: link)
+        }
+
         if self.clockSyncService == nil {
             let svc22 = ClockSyncService()
             svc22.log = { [weak self] msg in self?.log(msg) }
@@ -263,7 +273,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             let svc28 = DeviceStatusService()
             svc28.log = { [weak self] msg in self?.log(msg) }
             self.deviceStatusService = svc28
-            svc28.requestStatus(link: link)
+            svc28.subscribe(link: link)
         }
 
         if self.assistantService == nil {
@@ -314,7 +324,7 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     func refreshDeviceStatus() {
         bleQueue.async { [weak self] in
             guard let self, let link = self.airShield, link.phase == .secure else { return }
-            self.deviceStatusService?.requestStatus(link: link)
+            self.deviceStatusService?.subscribe(link: link)
         }
     }
 
@@ -716,10 +726,18 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 return
             }
 
-            // svc30 and svc79: glasses push these after encryption, no scope needed.
-            // Log them but don't process (we don't implement these services yet).
-            if svcID == 30 || svcID == 79 {
-                self.log("[RX] Glasses pushed svc\(svcID) (pre-scope service) — acknowledged")
+            // svc79: Constellation auth — glasses send EnableTrust (type 1).
+            // We MUST reply with status 0 (OK) or the link gets no scope
+            // and every service except 30/36/79 returns 0xC001.
+            if svcID == 79 {
+                self.log("[svc79] Glasses sent EnableTrust — replying status OK to establish scope")
+                link.sendStatus(channelID: ch, statusCode: 0)
+                return
+            }
+
+            // svc30: App links — glasses push this after encryption. No reply needed.
+            if svcID == 30 {
+                self.log("[svc30] Glasses pushed app_links (type \(message.header.messageType), \(message.payload.count)B)")
                 return
             }
 
@@ -754,6 +772,11 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                     self.mobileConfigPhase = mc.phase
                     self.mobileConfigFailure = mc.failureReason
                 }
+            }
+
+            // svc100: Peer build info response
+            if svcID == PeerBuildInfoService.servicePeerBuildInfo || (svcID == 0 && ch != 0 && self.peerBuildInfoService?.channelID == ch) {
+                self.peerBuildInfoService?.handleMessage(message, link: link)
             }
 
             // svc18: Capture list messages

@@ -69,16 +69,30 @@ final class ClockSyncService: @unchecked Sendable {
     // MARK: - Message handler
 
     func handleMessage(_ message: AirShieldMessage, link: AirShieldLink) {
+        if message.header.hasError {
+            let code = message.header.errorID
+            emit("Error 0x\(String(format: "%04x", code))")
+            phase = .failed
+            failureReason = "Error 0x\(String(format: "%04x", code))"
+            return
+        }
+
         let msgType = message.header.messageType
 
         switch msgType {
         case MsgType.syncResponse:
             phase = .synced
             lastSyncTime = Date()
-            emit("Clock sync acknowledged by glasses")
+            let fields = ProtoWire.parse(message.payload)
+            if fields.has(3) {
+                let sku = String(bytes: fields.bytes(3), encoding: .utf8) ?? "?"
+                emit("DeviceInfoResponse: SKU=\(sku) (\(message.payload.count)B)")
+            } else {
+                emit("DeviceInfoResponse (\(message.payload.count)B)")
+            }
 
         default:
-            emit("Unknown svc22 message type \(msgType)")
+            emit("svc22 type \(msgType) (\(message.payload.count)B)")
         }
     }
 
