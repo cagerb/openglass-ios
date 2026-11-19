@@ -665,8 +665,8 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             if let co = self.changeOwner, co.phase != .idle && co.phase != .failed && co.phase != .succeeded {
                 if isSvc36 {
                     co.handleMessage(message, link: link)
+                    return
                 }
-                return
             }
 
             if let trust = self.trustExchange, trust.phase == .proving || trust.phase == .waitingForGlassesPush {
@@ -674,8 +674,8 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                     trust.handleMessage(message, link: link)
                     self.trustPhase = trust.phase
                     self.trustFailure = trust.failureReason
+                    return
                 }
-                return
             }
 
             if isSvc36 && message.header.messageType == AirShieldLink.typeIdentityResponse && !message.header.hasError {
