@@ -61,11 +61,20 @@ final class AssistantService: @unchecked Sendable {
     private var firstMessage = true
     private var sessionActive = false
     private var recordingStartTime: Date?
+    /// Bumped on every accepted svc1023 trigger; lets the no-audio timeout ignore stale triggers.
+    private(set) var triggerGeneration = 0
+    /// Diagnostics: svc15 messages seen on this connection.
+    private(set) var svc15MessagesSeen = 0
 
     // MARK: - Message handler (called from bleQueue by BluetoothManager)
 
     func handleMessage(_ message: AirShieldMessage, link: AirShieldLink) {
         let header = message.header
+
+        svc15MessagesSeen += 1
+        if header.messageType != MsgType.audioChunk || svc15MessagesSeen <= 5 {
+            emit("svc15 message #\(svc15MessagesSeen): ch=\(String(format: "0x%04x", header.channelID)) type=\(header.messageType) err=\(header.hasError) len=\(message.payload.count) hex=\(Self.hex(message.payload.prefix(48)))")
+        }
 
         if header.hasError {
             let code = header.errorID
@@ -90,27 +99,56 @@ final class AssistantService: @unchecked Sendable {
 
     // MARK: - Trigger from svc1023 (tap-and-hold or "Hey Meta")
 
-    func handleTrigger(_ message: AirShieldMessage, link: AirShieldLink) {
-        guard !message.header.hasError else { return }
-        guard message.header.messageType == 1 else {
-            emit("svc1023 unknown type \(message.header.messageType)")
-            return
+    /// Returns true when the message was taken as an assistant trigger and a session started.
+    @discardableResult
+    func handleTrigger(_ message: AirShieldMessage, link: AirShieldLink) -> Bool {
+        let header = message.header
+        let ch = String(format: "0x%04x", header.channelID)
+        emit("svc1023 step 1/4: message on ch=\(ch) type=\(header.messageType) err=\(header.hasError) closed=\(header.isClosed) len=\(message.payload.count)")
+        emit("svc1023 payload hex: \(Self.hex(message.payload.prefix(96)))")
+        emit("svc1023 payload text: \"\(Self.printable(message.payload.prefix(96)))\"")
+
+        guard !header.hasError else {
+            emit("svc1023 stopped at step 1: status 0x\(String(format: "%04x", header.errorID)), not a trigger")
+            return false
         }
-        let intent = String(bytes: message.payload, encoding: .utf8) ?? ""
-        guard intent.contains("assistant") else {
-            emit("svc1023 trigger ignored: \"\(intent)\"")
-            return
+        guard header.messageType == 1 else {
+            emit("svc1023 stopped at step 2: type \(header.messageType) is not the trigger type (1)")
+            return false
         }
-        emit("svc1023 trigger: \"\(intent)\"")
-        if sessionActive { reset() }
+        emit("svc1023 step 2/4: type is 1")
+
+        let intent = String(bytes: message.payload, encoding: .utf8) ?? Self.printable(message.payload[...])
+        guard intent.lowercased().contains("assistant") else {
+            emit("svc1023 stopped at step 3: payload does not mention \"assistant\"")
+            return false
+        }
+        emit("svc1023 step 3/4: intent \"\(intent)\" accepted")
+
+        if sessionActive {
+            emit("svc1023: a session was already active — restarting it")
+            reset()
+        }
         sessionActive = true
         currentAudio = []
         recordingStartTime = Date()
         phase = .listening
+        triggerGeneration += 1
         if channelID == 0 {
             channelID = link.openChannel()
             firstMessage = true
         }
+        emit("svc1023 step 4/4: TRIGGER RECEIVED — now listening for svc15 audio (our channel \(String(format: "0x%04x", channelID)), nothing sent to the glasses)")
+        emit("NOTE: svc15 bring-up (registration 1000/1001, streams 5000-5003, NetEvent 9000/9001) is not implemented yet, so the glasses are not expected to send audio")
+        return true
+    }
+
+    /// Called a few seconds after a trigger. If nothing arrived on svc15, say so and go back to Ready.
+    func checkTriggerTimeout(generation: Int) {
+        guard generation == triggerGeneration, sessionActive, phase == .listening else { return }
+        guard currentAudio.isEmpty else { return }
+        emit("No svc15 audio arrived after the svc1023 trigger (\(svc15MessagesSeen) svc15 messages seen this connection) — back to Ready")
+        reset()
     }
 
     // MARK: - Incoming: session start
@@ -228,6 +266,14 @@ final class AssistantService: @unchecked Sendable {
         failureReason = reason
         emit("FAILED: \(reason)")
         sessionActive = false
+    }
+
+    private static func hex(_ bytes: ArraySlice<UInt8>) -> String {
+        bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func printable(_ bytes: ArraySlice<UInt8>) -> String {
+        String(bytes.map { $0 >= 0x20 && $0 < 0x7F ? Character(UnicodeScalar($0)) : "." })
     }
 
     private func emit(_ message: String) {

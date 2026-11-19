@@ -104,6 +104,10 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     @ObservationIgnored private var peerBuildInfoService: PeerBuildInfoService?
     @ObservationIgnored private var endLinkSetupDone = false
 
+    /// Capture download callbacks. Called on the BLE queue; set once by GlassesController.
+    @ObservationIgnored var onCaptureFileReceived: (@Sendable (AirshipReceiver.ReceivedFile) -> Void)?
+    @ObservationIgnored var onCaptureTransferFailed: (@Sendable (String) -> Void)?
+
     var captureListPhase: CaptureListService.Phase { captureListService?.phase ?? .idle }
     var captures: [CaptureEntry] { captureListService?.captures ?? [] }
     var airshipReceiverPhase: AirshipReceiver.Phase { airshipReceiver?.phase ?? .idle }
@@ -309,23 +313,29 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         }
     }
 
-    func requestCaptureTransfer(handle: String, linkType: Int = 1) {
+    /// Ask the glasses to send a capture over BLE (svc18 requeue). The files arrive as
+    /// svc20 Airship offers; each one saved is reported through `onCaptureFileReceived`.
+    /// A request that could not even be sent is reported through `onCaptureTransferFailed`.
+    func requestCaptureTransfer(handle: String, linkType: Int = 1, incomingDirectory: URL) {
         bleQueue.async { [weak self] in
-            guard let self, let link = self.airShield else { return }
+            guard let self else { return }
+            guard self.airShield != nil, let captureList = self.captureListService else {
+                self.log("[CaptureList] Cannot request \(handle): not connected or capture list not started")
+                self.onCaptureTransferFailed?("Not connected to the glasses")
+                return
+            }
             if self.airshipReceiver == nil {
-                let receiver = AirshipReceiver()
+                let receiver = AirshipReceiver(destinationDirectory: incomingDirectory)
                 receiver.log = { [weak self] msg in self?.log(msg) }
+                receiver.onFileSaved = { [weak self] file in self?.onCaptureFileReceived?(file) }
+                receiver.onTransferFailed = { [weak self] reason in self?.onCaptureTransferFailed?(reason) }
                 self.airshipReceiver = receiver
             }
-            self.captureListService?.requestTransfer(handle: handle, linkType: linkType)
+            self.airshipReceiver?.expectFile()
+            if !captureList.requestTransfer(handle: handle, linkType: linkType) {
+                self.onCaptureTransferFailed?("Could not send the request to the glasses")
+            }
         }
-    }
-
-    func downloadAsset(uuid: String, to destination: URL) async throws -> URL {
-        guard let receiver = airshipReceiver, let link = airShield else {
-            throw MediaError.downloadFailed
-        }
-        return try await receiver.requestDownload(assetUUID: uuid, destinationURL: destination, link: link)
     }
 
     func deleteCapture(handle: String) {
@@ -757,7 +767,29 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
 
             let svcID = message.header.serviceID
             let ch = message.header.channelID
+            // Bulk file data for a capture download: thousands of chunks, so keep them out
+            // of the 400-line debug log and hand them straight to the receiver.
+            if svcID == 0, let receiver = self.airshipReceiver, receiver.isDataChunk(message) {
+                receiver.handleMessage(message, link: link)
+                return
+            }
+
             self.log("[RX] ch=\(String(format: "0x%04x", ch)) svc=\(svcID) type=\(message.header.messageType) err=\(message.header.hasError) len=\(message.payload.count)")
+
+            // Diagnostics: show the payload of anything on a service this app does not fully
+            // understand yet (assistant trigger/audio, and services with no handler at all).
+            let handledServices: Set<Int> = [0, 4, 18, 19, 20, 22, 28, 29, 30, 36, 79, 100]
+            if !handledServices.contains(svcID), !message.payload.isEmpty {
+                let hex = message.payload.prefix(64).map { String(format: "%02x", $0) }.joined()
+                self.log("[RX] svc=\(svcID) payload: \(hex)\(message.payload.count > 64 ? "..." : "")")
+            }
+
+            // Untagged follow-ups (checks, complete) on the channel the glasses opened for a
+            // capture download. Claimed here so no other service mistakes them for its own.
+            if svcID == 0, (ch & 0x8000) != 0, let receiver = self.airshipReceiver, receiver.incomingChannelID == ch {
+                receiver.handleMessage(message, link: link)
+                return
+            }
 
             // EndLinkSetup exchange: glasses send their EndLinkSetup on the link setup channel.
             // We MUST reply with status 0x1000 or the glasses drop the link within 1 ms.
@@ -861,8 +893,15 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             }
 
             // svc20: Airship file transfer — route to receiver for downloads FROM glasses
-            if svcID == AirshipReceiver.serviceAirship || (svcID == 0 && ch != 0 && (self.airshipReceiver?.channelID == ch || self.airshipReceiver?.channelID == chMirror)) {
-                self.airshipReceiver?.handleMessage(message, link: link)
+            // Offers carry the service tag; follow-ups arrive untagged on the same channel.
+            if let receiver = self.airshipReceiver {
+                if svcID == AirshipReceiver.serviceAirship {
+                    receiver.handleMessage(message, link: link)
+                } else if svcID == 0 && ch != 0 && receiver.incomingChannelID == ch {
+                    receiver.handleMessage(message, link: link)
+                }
+            } else if svcID == AirshipReceiver.serviceAirship && self.firmwareManager == nil && self.mobileConfigManager == nil {
+                self.log("[AirshipRX] svc20 type \(message.header.messageType) arrived but no download was requested — ignored")
             }
 
             // svc22: Clock sync response
@@ -882,7 +921,19 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
 
             // svc1023: Assistant trigger (tap-and-hold or "Hey Meta")
             if svcID == AssistantService.serviceAssistantTrigger {
-                self.assistantService?.handleTrigger(message, link: link)
+                self.log("[Assistant] svc1023 message reached routing (ch=\(String(format: "0x%04x", ch)), type=\(message.header.messageType), \(message.payload.count) bytes, assistant service \(self.assistantService == nil ? "NOT started" : "started"))")
+                if let assistant = self.assistantService {
+                    if assistant.handleTrigger(message, link: link) {
+                        // Nothing answers the trigger yet (svc15 bring-up is not implemented),
+                        // so do not leave the UI stuck on "Listening...".
+                        let generation = assistant.triggerGeneration
+                        self.bleQueue.asyncAfter(deadline: .now() + 8) { [weak self] in
+                            self?.assistantService?.checkTriggerTimeout(generation: generation)
+                        }
+                    }
+                } else {
+                    self.log("[Assistant] svc1023 dropped: assistant service not created yet (link setup not finished)")
+                }
             }
         }
         link.onFailure = { [weak self] reason in

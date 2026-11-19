@@ -216,31 +216,25 @@ final class CaptureListService: @unchecked Sendable {
 
     // MARK: - Transfer request
 
-    func requestTransfer(handle: String, linkType: Int = 7) {
-        guard let link else {
-            emit("Cannot request transfer: no link")
-            return
+    @discardableResult
+    func requestTransfer(handle: String, linkType: Int = 7) -> Bool {
+        guard let link, channelID != 0 else {
+            emit("Cannot request transfer: no link / capture channel not open")
+            return false
         }
         let text = "\(handle):\(linkType)"
         let payload = Array(text.utf8)
-        emit("Requesting transfer for \(handle) with link type \(linkType)")
+        emit("Requesting transfer for \(handle) with link type \(linkType) (svc18 type 0x86 on ch=0x\(String(format: "%04x", channelID)))")
 
-        if firstMessage {
-            link.sendMessage(
-                channelID: channelID,
-                serviceID: Self.serviceCaptureList,
-                messageType: MsgType.requeue,
-                payload: payload
-            )
-            firstMessage = false
-        } else {
-            link.sendMessage(
-                channelID: channelID,
-                serviceID: nil,
-                messageType: MsgType.requeue,
-                payload: payload
-            )
-        }
+        let sent = link.sendMessage(
+            channelID: channelID,
+            serviceID: firstMessage ? Self.serviceCaptureList : nil,
+            messageType: MsgType.requeue,
+            payload: payload
+        )
+        firstMessage = false
+        if !sent { emit("Transfer request could not be sent") }
+        return sent
     }
 
     // MARK: - Delete
@@ -309,7 +303,9 @@ final class CaptureListService: @unchecked Sendable {
             onDeleteResult?(handle, false)
 
         default:
-            emit("Unknown svc18 message type \(msgType)")
+            let hex = message.payload.prefix(48).map { String(format: "%02x", $0) }.joined()
+            let status = message.header.hasError ? " status=0x\(String(format: "%04x", message.header.errorID))" : ""
+            emit("Unknown svc18 message type \(msgType)\(status) (\(message.payload.count) bytes): \(hex)")
         }
     }
 

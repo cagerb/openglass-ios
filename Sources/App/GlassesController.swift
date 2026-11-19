@@ -51,6 +51,20 @@ final class GlassesController {
     private(set) var storageFreeBytes: Int64 = 0
     private(set) var storageTotalBytes: Int64 = 0
 
+    // Capture downloads (BLE)
+    enum CaptureDownloadState: Equatable, Sendable {
+        case requesting
+        case done
+        case failed(String)
+    }
+    /// Download state per capture handle; a handle with no entry has not been asked for.
+    private(set) var downloadStates: [String: CaptureDownloadState] = [:]
+    /// Captures saved to disk that the gallery has not yet written to SwiftData.
+    private(set) var finishedDownloads: [Capture] = []
+    private(set) var lastDownloadError: String?
+    private var downloadAttempts: [String: Int] = [:]
+    private let mediaDirectory = LocalStore().mediaDirectory
+
     // MARK: - Dependencies
 
     let bluetooth = BluetoothManager()
@@ -68,6 +82,16 @@ final class GlassesController {
         bluetooth.onDataXMessage = { [weak self] data in
             Task { @MainActor [weak self] in
                 await self?.handleDataXMessage(data)
+            }
+        }
+        bluetooth.onCaptureFileReceived = { [weak self] file in
+            Task { @MainActor [weak self] in
+                self?.handleReceivedFile(file)
+            }
+        }
+        bluetooth.onCaptureTransferFailed = { [weak self] reason in
+            Task { @MainActor [weak self] in
+                self?.handleTransferFailed(reason)
             }
         }
     }
@@ -347,12 +371,158 @@ final class GlassesController {
         bluetooth.enumerateCaptures()
     }
 
+    /// Ask the glasses to send one capture over BLE and track it until a file lands,
+    /// the glasses stay silent, or the transfer fails.
     func requestCaptureDownload(handle: String) {
-        bluetooth.requestCaptureTransfer(handle: handle, linkType: 1)
+        if downloadStates[handle] == .requesting { return }
+        guard isOwnerVerified else {
+            downloadStates[handle] = .failed("Not connected to the glasses")
+            lastDownloadError = "Not connected to the glasses"
+            return
+        }
+
+        lastDownloadError = nil
+        downloadStates[handle] = .requesting
+        let attempt = (downloadAttempts[handle] ?? 0) + 1
+        downloadAttempts[handle] = attempt
+
+        bluetooth.requestCaptureTransfer(
+            handle: handle,
+            linkType: 1,
+            incomingDirectory: mediaDirectory.appendingPathComponent("incoming", isDirectory: true)
+        )
+
+        // Give up if the glasses never offer the file. While bytes are flowing, keep waiting.
+        Task { [weak self] in
+            while true {
+                try? await Task.sleep(for: .seconds(25))
+                guard let self,
+                      self.downloadAttempts[handle] == attempt,
+                      self.downloadStates[handle] == .requesting else { return }
+                if self.bluetooth.airshipReceiverPhase == .receiving { continue }
+                self.failDownload(handle: handle, reason: "The glasses did not send the file")
+                return
+            }
+        }
     }
 
-    func downloadAsset(uuid: String, to destination: URL) async throws -> URL {
-        try await bluetooth.downloadAsset(uuid: uuid, to: destination)
+    /// Captures saved since the last call, for the gallery to persist. Clears the list.
+    func takeFinishedDownloads() -> [Capture] {
+        let finished = finishedDownloads
+        finishedDownloads = []
+        return finished
+    }
+
+    private var pendingDownloadHandles: [String] {
+        downloadStates.compactMap { $0.value == .requesting ? $0.key : nil }
+    }
+
+    private func failDownload(handle: String, reason: String) {
+        downloadStates[handle] = .failed(reason)
+        lastDownloadError = reason
+        logger.error("Capture download failed: \(reason, privacy: .public)")
+    }
+
+    private func handleTransferFailed(_ reason: String) {
+        // The receiver handles one file at a time and does not know which capture it was for,
+        // so only attribute the failure when exactly one download is waiting.
+        let pending = pendingDownloadHandles
+        if pending.count == 1, let handle = pending.first {
+            failDownload(handle: handle, reason: reason)
+        } else {
+            lastDownloadError = reason
+        }
+    }
+
+    private func handleReceivedFile(_ file: AirshipReceiver.ReceivedFile) {
+        let pending = Set(pendingDownloadHandles)
+        let candidates = bluetooth.captures.filter { pending.contains($0.handle) }
+
+        func normalized(_ uuid: String) -> String {
+            uuid.replacingOccurrences(of: "-", with: "").lowercased()
+        }
+
+        // Match the file to a capture: by asset UUID, then by exact size, then "the only one waiting".
+        var entry: CaptureEntry?
+        var asset: AssetEntry?
+        for candidate in candidates {
+            if let hit = candidate.assets.first(where: { normalized($0.uuid) == file.uuidHex }) {
+                entry = candidate
+                asset = hit
+                break
+            }
+        }
+        if entry == nil {
+            let bySize = candidates.filter { $0.assets.contains { $0.sizeBytes == UInt64(file.size) } }
+            if bySize.count == 1, let only = bySize.first {
+                entry = only
+                asset = only.assets.first { $0.sizeBytes == UInt64(file.size) }
+            }
+        }
+        if entry == nil, candidates.count == 1 {
+            entry = candidates.first
+        }
+
+        guard let entry else {
+            logger.info("Received \(file.basename, privacy: .public) but no waiting capture matches it; left in incoming/")
+            return
+        }
+
+        // A capture can come with side files (IMU data, a preview frame). Only the photo or
+        // video itself becomes a gallery item; the rest stay in incoming/.
+        let ext = file.url.pathExtension.lowercased()
+        let captureIsVideo = entry.kind == CaptureType.video.rawValue
+        let isVideo: Bool
+        let isPhoto: Bool
+        if let asset {
+            // Asset media type: 1 = MP4, 2 = JPEG, 3 = IMU, 4 = frame.
+            isVideo = asset.mediaType == 1
+            isPhoto = asset.mediaType == 2 && !captureIsVideo
+        } else {
+            isVideo = captureIsVideo && (ext == "mp4" || ext == "mov")
+            isPhoto = !captureIsVideo && (ext == "jpg" || ext == "jpeg" || ext == "heic")
+        }
+        guard isVideo || isPhoto else {
+            logger.info("Received side file \(file.basename, privacy: .public) for \(entry.handle, privacy: .public)")
+            return
+        }
+
+        let type: CaptureType = isVideo ? .video : .photo
+        let safeID = String(entry.handle.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "_" })
+        // Same naming as LocalStore.fileURL(for:): <id>.jpg / <id>.mp4 in the media directory.
+        let destination = mediaDirectory.appendingPathComponent("\(safeID).\(type == .video ? "mp4" : "jpg")")
+
+        do {
+            let fm = FileManager.default
+            try fm.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
+            if fm.fileExists(atPath: destination.path) {
+                try fm.removeItem(at: destination)
+            }
+            try fm.moveItem(at: file.url, to: destination)
+        } catch {
+            failDownload(handle: entry.handle, reason: "Could not store the file: \(error.localizedDescription)")
+            return
+        }
+
+        let seconds = Double(entry.timestampNanos) / 1_000_000_000
+        // Only trust the glasses' timestamp if it is a plausible wall-clock time (after 2020).
+        let timestamp = seconds > 1_577_836_800 ? Date(timeIntervalSince1970: seconds) : Date()
+        var capture = Capture(
+            id: safeID,
+            type: type,
+            timestamp: timestamp,
+            fileSize: Int64(file.size),
+            duration: nil,
+            width: nil,
+            height: nil
+        )
+        capture.isDownloaded = true
+        capture.localFileURL = destination
+
+        finishedDownloads.append(capture)
+        downloadStates[entry.handle] = .done
+        lastDownloadError = nil
+        logger.info("Capture \(entry.handle, privacy: .public) saved as \(destination.lastPathComponent, privacy: .public)")
     }
 
     func deleteCapture(handle: String) {
@@ -416,5 +586,9 @@ final class GlassesController {
         clockSynced = false
         storageFreeBytes = 0
         storageTotalBytes = 0
+        // Anything still waiting on the glasses cannot finish on a dead link.
+        for (handle, state) in downloadStates where state == .requesting {
+            downloadStates[handle] = .failed("Disconnected")
+        }
     }
 }

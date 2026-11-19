@@ -10,7 +10,6 @@ struct GalleryView: View {
     @State private var isDownloading = false
     @State private var downloadProgress: (completed: Int, total: Int) = (0, 0)
     @State private var showExportConfirmation = false
-    @State private var savingHandle: String?
 
     private let columns = [
         GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 4)
@@ -45,6 +44,9 @@ struct GalleryView: View {
                 }
             }
             .navigationTitle("Gallery")
+            .task(id: controller.finishedDownloads.count) {
+                persistFinishedDownloads()
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -98,6 +100,13 @@ struct GalleryView: View {
                     .padding(.horizontal, 8)
             }
 
+            if let error = controller.lastDownloadError {
+                Label("Download failed: \(error)", systemImage: "exclamationmark.triangle")
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 8)
+            }
+
             LazyVGrid(columns: columns, spacing: 4) {
                 ForEach(bleCaptures, id: \.handle) { entry in
                     bleTile(entry)
@@ -110,7 +119,7 @@ struct GalleryView: View {
     private func bleTile(_ entry: CaptureEntry) -> some View {
         let isPhoto = entry.kind == CaptureType.photo.rawValue
         let totalSize = entry.assets.reduce(0 as UInt64) { $0 + $1.sizeBytes }
-        let isSaving = savingHandle == entry.handle
+        let state = controller.downloadStates[entry.handle]
 
         ZStack(alignment: .bottomTrailing) {
             RoundedRectangle(cornerRadius: 8)
@@ -130,16 +139,29 @@ struct GalleryView: View {
                     }
                 }
 
-            Button {
-                savingHandle = entry.handle
-                controller.requestCaptureDownload(handle: entry.handle)
-            } label: {
-                Image(systemName: isSaving ? "arrow.down.circle.fill" : "arrow.down.circle")
+            switch state {
+            case .requesting:
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(6)
+            case .done:
+                Image(systemName: "checkmark.circle.fill")
                     .font(.body)
-                    .foregroundStyle(isSaving ? .green : .blue)
+                    .foregroundStyle(.green)
+                    .padding(6)
+            case .failed, nil:
+                // Not asked for yet, or failed: tap to (re)try.
+                let failed = state != nil
+                Button {
+                    controller.requestCaptureDownload(handle: entry.handle)
+                } label: {
+                    Image(systemName: failed ? "exclamationmark.arrow.circlepath" : "arrow.down.circle")
+                        .font(.body)
+                        .foregroundStyle(failed ? .red : .blue)
+                }
+                .buttonStyle(.plain)
+                .padding(6)
             }
-            .buttonStyle(.plain)
-            .padding(6)
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -183,6 +205,17 @@ struct GalleryView: View {
                 } placeholder: {
                     thumbnailPlaceholder(capture)
                 }
+            } else if capture.type == .photo,
+                      let fileURL = capture.localFileURL,
+                      FileManager.default.fileExists(atPath: fileURL.path) {
+                // BLE downloads have no separate thumbnail: show the photo itself.
+                AsyncImage(url: fileURL) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(1, contentMode: .fill)
+                } placeholder: {
+                    thumbnailPlaceholder(capture)
+                }
             } else {
                 thumbnailPlaceholder(capture)
             }
@@ -212,6 +245,25 @@ struct GalleryView: View {
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
+    }
+
+    // MARK: - Persist BLE downloads
+
+    /// Write captures the controller has finished downloading into SwiftData,
+    /// which is what fills the "Downloaded" section.
+    private func persistFinishedDownloads() {
+        let finished = controller.takeFinishedDownloads()
+        guard !finished.isEmpty else { return }
+        for capture in finished {
+            if let existing = captureRecords.first(where: { $0.assetId == capture.id }) {
+                existing.isDownloaded = true
+                existing.fileSize = capture.fileSize ?? existing.fileSize
+                existing.localFileName = capture.localFileURL?.lastPathComponent
+            } else {
+                modelContext.insert(CaptureRecord(from: capture))
+            }
+        }
+        try? modelContext.save()
     }
 
     // MARK: - Export
