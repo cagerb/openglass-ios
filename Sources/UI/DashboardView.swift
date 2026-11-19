@@ -369,13 +369,13 @@ struct DashboardView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(glasses.storageDisplayString)
+                Text(controller.storageDisplayString)
                     .font(.subheadline)
                     .monospacedDigit()
             }
 
-            ProgressView(value: glasses.storageFraction)
-                .tint(glasses.storageFraction > 0.9 ? .red : .blue)
+            ProgressView(value: controller.storageFraction)
+                .tint(controller.storageFraction > 0.9 ? .red : .blue)
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))

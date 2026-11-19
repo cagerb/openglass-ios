@@ -111,6 +111,8 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     var deviceBatteryPercent: Int? { deviceStatusService?.batteryPercent }
     var deviceIsCharging: Bool { deviceStatusService?.isCharging ?? false }
     var deviceTemperature: Double? { deviceStatusService?.temperatureCelsius }
+    var deviceStorageFreeBytes: Int64 { deviceStatusService?.storageFreeBytes ?? 0 }
+    var deviceStorageTotalBytes: Int64 { deviceStatusService?.storageTotalBytes ?? 0 }
     var clockSyncPhase: ClockSyncService.Phase { clockSyncService?.phase ?? .idle }
     var assistantPhase: AssistantService.Phase { assistantService?.phase ?? .idle }
 
@@ -876,6 +878,11 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             // svc15: Assistant messages (glasses-initiated channel OR our response channel)
             if svcID == AssistantService.serviceAssistant || (svcID == 0 && ch != 0 && self.assistantService != nil && (self.assistantService!.channelID == ch || self.assistantService!.channelID == chMirror || self.assistantService!.incomingChannelID == ch || self.assistantService!.incomingChannelID == chMirror)) {
                 self.assistantService?.handleMessage(message, link: link)
+            }
+
+            // svc1023: Assistant trigger (tap-and-hold or "Hey Meta")
+            if svcID == AssistantService.serviceAssistantTrigger {
+                self.assistantService?.handleTrigger(message, link: link)
             }
         }
         link.onFailure = { [weak self] reason in

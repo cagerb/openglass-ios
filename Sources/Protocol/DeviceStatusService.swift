@@ -31,6 +31,8 @@ final class DeviceStatusService: @unchecked Sendable {
     private(set) var isCharging: Bool = false
     private(set) var temperatureCelsius: Double?
     private(set) var deviceState: UInt32 = 0
+    private(set) var storageFreeBytes: Int64 = 0
+    private(set) var storageTotalBytes: Int64 = 0
 
     var log: ((String) -> Void)?
 
@@ -71,31 +73,26 @@ final class DeviceStatusService: @unchecked Sendable {
         switch msgType {
         case MsgType.subscribeAck:
             emit("Subscribe acknowledged")
-        case MsgType.deviceState, MsgType.stateUpdate:
-            parseStatusResponse(message.payload)
-        case 2007...2043:
-            parseStatusResponse(message.payload)
+        case MsgType.deviceState:
+            parseFullSnapshot(message.payload)
+        case MsgType.stateUpdate, 2007...2043:
+            emit("svc28 delta type \(msgType) (\(message.payload.count) bytes)")
         default:
             emit("svc28 type \(msgType) (\(message.payload.count) bytes)")
         }
     }
 
-    // MARK: - Parse HNDeviceState wrapper
+    // MARK: - Parse full HNDeviceState snapshot (type 2005 only)
 
-    private func parseStatusResponse(_ payload: [UInt8]) {
-        // Outer message: HNDeviceState
+    private func parseFullSnapshot(_ payload: [UInt8]) {
         let outer = ProtoWire.parse(payload)
 
-        // Field 1 contains the stateCommon sub-message (length-delimited bytes)
         let stateCommonBytes = outer.bytes(1)
         guard !stateCommonBytes.isEmpty else {
-            emit("No stateCommon in HNDeviceState — raw payload \(payload.count) bytes")
-            // Try parsing the outer directly as a fallback
-            parseFlatStatus(outer)
+            emit("No stateCommon in full snapshot — skipping (\(payload.count) bytes)")
             return
         }
 
-        // Parse the inner stateCommon
         let inner = ProtoWire.parse(stateCommonBytes)
 
         let charging = inner.varint(2)
@@ -110,27 +107,25 @@ final class DeviceStatusService: @unchecked Sendable {
         }
         deviceState = voltage
 
+        // Storage: outer field 2 contains device info with storage sub-message at field 4
+        let deviceInfoBytes = outer.bytes(2)
+        if !deviceInfoBytes.isEmpty {
+            let devInfo = ProtoWire.parse(deviceInfoBytes)
+            let storageBytes = devInfo.bytes(3)
+            if !storageBytes.isEmpty {
+                let storage = ProtoWire.parse(storageBytes)
+                let freeMB = Int64(storage.varint(1))
+                let totalMB = Int64(storage.varint(2))
+                if totalMB > 0 {
+                    storageFreeBytes = freeMB * 1_048_576
+                    storageTotalBytes = totalMB * 1_048_576
+                    emit("Storage: \(freeMB)MB free / \(totalMB)MB total")
+                }
+            }
+        }
+
         phase = .received
         emit("Battery: \(battery)%, charging: \(isCharging), temp: \(temperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "unknown"), voltage: \(voltage)mV")
-    }
-
-    private func parseFlatStatus(_ fields: ProtoWire.Fields) {
-        let battery = Int(fields.varint(3))
-        if battery > 0 && battery <= 100 {
-            batteryPercent = battery
-            isCharging = fields.varint(2) != 0
-            let tempRaw = fields.varint(4)
-            if tempRaw > 0 {
-                temperatureCelsius = Double(tempRaw) / 1000.0
-            }
-            deviceState = UInt32(fields.varint(5))
-            phase = .received
-            emit("(flat parse) Battery: \(battery)%, charging: \(isCharging)")
-        } else {
-            phase = .failed
-            failureReason = "Could not parse device status"
-            emit("Failed to parse status response (\(fields.varints.count) varints, \(fields.blobs.count) blobs)")
-        }
     }
 
     // MARK: - Convenience
@@ -153,6 +148,8 @@ final class DeviceStatusService: @unchecked Sendable {
         isCharging = false
         temperatureCelsius = nil
         deviceState = 0
+        storageFreeBytes = 0
+        storageTotalBytes = 0
         channelID = 0
         firstMessage = true
     }

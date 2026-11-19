@@ -20,6 +20,7 @@ import Foundation
 final class AssistantService: @unchecked Sendable {
 
     static let serviceAssistant = 15
+    static let serviceAssistantTrigger = 1023
 
     enum Phase: String {
         case idle        = "Ready"
@@ -84,6 +85,16 @@ final class AssistantService: @unchecked Sendable {
 
         default:
             emit("Unexpected svc15 type \(header.messageType)")
+        }
+    }
+
+    // MARK: - Trigger from svc1023 (tap-and-hold or "Hey Meta")
+
+    func handleTrigger(_ message: AirShieldMessage, link: AirShieldLink) {
+        let intent = String(bytes: message.payload, encoding: .utf8) ?? ""
+        emit("svc1023 trigger: \"\(intent)\" (type \(message.header.messageType))")
+        if !sessionActive {
+            handleSessionStart(message, link: link)
         }
     }
 

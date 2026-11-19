@@ -10,6 +10,7 @@ struct GalleryView: View {
     @State private var isDownloading = false
     @State private var downloadProgress: (completed: Int, total: Int) = (0, 0)
     @State private var showExportConfirmation = false
+    @State private var savingHandle: String?
 
     private let columns = [
         GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 4)
@@ -17,28 +18,43 @@ struct GalleryView: View {
 
     private let store = LocalStore()
 
+    private var bleCaptures: [CaptureEntry] { controller.captures }
+    private var hasAnyContent: Bool { !bleCaptures.isEmpty || !captureRecords.isEmpty }
+
     var body: some View {
         NavigationStack {
             Group {
-                if captureRecords.isEmpty {
-                    ContentUnavailableView(
-                        "No Captures",
-                        systemImage: "photo.on.rectangle.angled",
-                        description: Text("Connect and authenticate with your glasses, then download stored media via SoftAP.")
-                    )
-                } else {
+                if hasAnyContent {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
-                            storedMediaSection
+                            if !bleCaptures.isEmpty {
+                                onGlassesSection
+                            }
+                            if !captureRecords.isEmpty {
+                                downloadedSection
+                            }
                         }
                         .padding(4)
                     }
+                } else {
+                    ContentUnavailableView(
+                        "No Captures",
+                        systemImage: "photo.on.rectangle.angled",
+                        description: Text("Connect to your glasses to see photos and videos stored on the device.")
+                    )
                 }
             }
             .navigationTitle("Gallery")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        if !bleCaptures.isEmpty {
+                            Button {
+                                controller.refreshCaptures()
+                            } label: {
+                                Label("Refresh", systemImage: "arrow.clockwise")
+                            }
+                        }
                         if !captureRecords.isEmpty {
                             Button {
                                 showExportConfirmation = true
@@ -67,12 +83,73 @@ struct GalleryView: View {
         }
     }
 
-    // MARK: - Stored media from SoftAP sync
+    // MARK: - On Glasses (BLE-enumerated captures)
 
-    private var storedMediaSection: some View {
+    private var onGlassesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("From Glasses")
+                Text("On Glasses")
+                    .font(.headline)
+                    .padding(.horizontal, 8)
+                Spacer()
+                Text("\(bleCaptures.count)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+            }
+
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(bleCaptures, id: \.handle) { entry in
+                    bleTile(entry)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func bleTile(_ entry: CaptureEntry) -> some View {
+        let isPhoto = entry.kind == CaptureType.photo.rawValue
+        let totalSize = entry.assets.reduce(0 as UInt64) { $0 + $1.sizeBytes }
+        let isSaving = savingHandle == entry.handle
+
+        ZStack(alignment: .bottomTrailing) {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary)
+                .aspectRatio(1, contentMode: .fill)
+                .overlay {
+                    VStack(spacing: 6) {
+                        Image(systemName: isPhoto ? "photo" : "video")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+
+                        if totalSize > 0 {
+                            Text(formatBytes(totalSize))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+
+            Button {
+                savingHandle = entry.handle
+                controller.requestCaptureDownload(handle: entry.handle)
+            } label: {
+                Image(systemName: isSaving ? "arrow.down.circle.fill" : "arrow.down.circle")
+                    .font(.body)
+                    .foregroundStyle(isSaving ? .green : .blue)
+            }
+            .buttonStyle(.plain)
+            .padding(6)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: - Downloaded (SwiftData captures)
+
+    private var downloadedSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Downloaded")
                     .font(.headline)
                     .padding(.horizontal, 8)
                 Spacer()
@@ -90,7 +167,7 @@ struct GalleryView: View {
         }
     }
 
-    // MARK: - Capture tile
+    // MARK: - Capture tile (downloaded)
 
     @ViewBuilder
     private func captureTile(_ record: CaptureRecord) -> some View {
@@ -145,6 +222,18 @@ struct GalleryView: View {
             try await store.exportAllToPhotos(captures: captures) { _, _ in }
         } catch {
             // Handle error
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        if bytes >= 1_073_741_824 {
+            return String(format: "%.1f GB", Double(bytes) / 1_073_741_824)
+        } else if bytes >= 1_048_576 {
+            return String(format: "%.1f MB", Double(bytes) / 1_048_576)
+        } else {
+            return String(format: "%.0f KB", Double(bytes) / 1024)
         }
     }
 

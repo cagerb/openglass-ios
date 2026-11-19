@@ -48,6 +48,8 @@ final class GlassesController {
     private(set) var airshipReceiverPhase: AirshipReceiver.Phase = .idle
     private(set) var airshipReceiverProgress: Double = 0
     private(set) var servicesStarted: Bool = false
+    private(set) var storageFreeBytes: Int64 = 0
+    private(set) var storageTotalBytes: Int64 = 0
 
     // MARK: - Dependencies
 
@@ -300,6 +302,8 @@ final class GlassesController {
         assistantPhase = bluetooth.assistantPhase
         airshipReceiverPhase = bluetooth.airshipReceiverPhase
         airshipReceiverProgress = bluetooth.airshipReceiverProgress
+        storageFreeBytes = bluetooth.deviceStorageFreeBytes
+        storageTotalBytes = bluetooth.deviceStorageTotalBytes
 
         firmwarePhase = bluetooth.firmwarePhase
         firmwareFailure = bluetooth.firmwareFailure
@@ -389,6 +393,19 @@ final class GlassesController {
         }
     }
 
+    var storageUsedBytes: Int64 { max(storageTotalBytes - storageFreeBytes, 0) }
+
+    var storageDisplayString: String {
+        guard storageTotalBytes > 0 else { return "-- / -- GB" }
+        let usedGB = Double(storageUsedBytes) / 1_073_741_824
+        let totalGB = Double(storageTotalBytes) / 1_073_741_824
+        return String(format: "%.1f / %.1f GB", usedGB, totalGB)
+    }
+
+    var storageFraction: Double {
+        storageTotalBytes > 0 ? Double(storageUsedBytes) / Double(storageTotalBytes) : 0
+    }
+
     // Reset services on disconnect
     func resetServices() {
         servicesStarted = false
@@ -397,5 +414,7 @@ final class GlassesController {
         deviceIsCharging = false
         deviceTemperature = nil
         clockSynced = false
+        storageFreeBytes = 0
+        storageTotalBytes = 0
     }
 }
