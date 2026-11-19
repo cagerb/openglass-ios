@@ -91,10 +91,25 @@ final class AssistantService: @unchecked Sendable {
     // MARK: - Trigger from svc1023 (tap-and-hold or "Hey Meta")
 
     func handleTrigger(_ message: AirShieldMessage, link: AirShieldLink) {
+        guard !message.header.hasError else { return }
+        guard message.header.messageType == 1 else {
+            emit("svc1023 unknown type \(message.header.messageType)")
+            return
+        }
         let intent = String(bytes: message.payload, encoding: .utf8) ?? ""
-        emit("svc1023 trigger: \"\(intent)\" (type \(message.header.messageType))")
-        if !sessionActive {
-            handleSessionStart(message, link: link)
+        guard intent.contains("assistant") else {
+            emit("svc1023 trigger ignored: \"\(intent)\"")
+            return
+        }
+        emit("svc1023 trigger: \"\(intent)\"")
+        if sessionActive { reset() }
+        sessionActive = true
+        currentAudio = []
+        recordingStartTime = Date()
+        phase = .listening
+        if channelID == 0 {
+            channelID = link.openChannel()
+            firstMessage = true
         }
     }
 
@@ -181,6 +196,7 @@ final class AssistantService: @unchecked Sendable {
     func sendFullTextResponse(text: String, link: AirShieldLink) {
         sendTextResponse(text: text, link: link)
         sendResponseComplete(link: link)
+        endSession(link: link)
     }
 
     // MARK: - Helpers

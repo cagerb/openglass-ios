@@ -96,36 +96,44 @@ final class DeviceStatusService: @unchecked Sendable {
         let inner = ProtoWire.parse(stateCommonBytes)
 
         let charging = inner.varint(2)
-        let battery = Int(inner.varint(3))
+        let batteryRaw = inner.varint(3)
         let tempRaw = inner.varint(4)
-        let voltage = UInt32(inner.varint(5))
+        let voltage = UInt32(truncatingIfNeeded: inner.varint(5))
 
-        batteryPercent = battery
+        if batteryRaw >= 1 && batteryRaw <= 100 {
+            batteryPercent = Int(batteryRaw)
+        }
         isCharging = charging != 0
-        if tempRaw > 0 {
+        if tempRaw > 0 && tempRaw < 200_000 {
             temperatureCelsius = Double(tempRaw) / 1000.0
         }
         deviceState = voltage
 
-        // Storage: outer field 2 contains device info with storage sub-message at field 4
+        // Storage: outer field 2 → device info, field 3 → storage sub-message
         let deviceInfoBytes = outer.bytes(2)
         if !deviceInfoBytes.isEmpty {
             let devInfo = ProtoWire.parse(deviceInfoBytes)
             let storageBytes = devInfo.bytes(3)
             if !storageBytes.isEmpty {
                 let storage = ProtoWire.parse(storageBytes)
-                let freeMB = Int64(storage.varint(1))
-                let totalMB = Int64(storage.varint(2))
-                if totalMB > 0 {
+                let freeMB = Int64(clamping: storage.varint(1))
+                let totalMB = Int64(clamping: storage.varint(2))
+                if totalMB > 0 && totalMB < 1_000_000 && freeMB >= 0 && freeMB <= totalMB {
                     storageFreeBytes = freeMB * 1_048_576
                     storageTotalBytes = totalMB * 1_048_576
                     emit("Storage: \(freeMB)MB free / \(totalMB)MB total")
+                } else {
+                    emit("Storage values out of range: free=\(freeMB) total=\(totalMB)")
                 }
+            } else {
+                emit("No storage sub-message at devInfo field 3 (devInfo has \(deviceInfoBytes.count) bytes)")
             }
+        } else {
+            emit("No device info at outer field 2 (\(payload.count) byte payload)")
         }
 
         phase = .received
-        emit("Battery: \(battery)%, charging: \(isCharging), temp: \(temperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "unknown"), voltage: \(voltage)mV")
+        emit("Battery: \(batteryRaw)%, charging: \(isCharging), temp: \(temperatureCelsius.map { String(format: "%.1f°C", $0) } ?? "unknown"), voltage: \(voltage)mV")
     }
 
     // MARK: - Convenience
