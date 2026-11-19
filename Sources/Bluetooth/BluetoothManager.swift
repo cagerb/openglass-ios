@@ -296,10 +296,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 self.log("[CaptureList] Enumeration already in progress, skipping")
                 return
             }
-            let svc18 = CaptureListService()
-            svc18.log = { [weak self] msg in self?.log(msg) }
-            self.captureListService = svc18
-            svc18.start(link: link)
+            if let existing = self.captureListService {
+                existing.start(link: link)
+            } else {
+                let svc18 = CaptureListService()
+                svc18.log = { [weak self] msg in self?.log(msg) }
+                self.captureListService = svc18
+                svc18.start(link: link)
+            }
         }
     }
 

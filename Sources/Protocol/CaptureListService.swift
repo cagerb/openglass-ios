@@ -198,14 +198,16 @@ final class CaptureListService: @unchecked Sendable {
     func start(link: AirShieldLink) {
         self.link = link
         captures = []
-        channelID = link.openChannel()
-        firstMessage = true
+        if channelID == 0 {
+            channelID = link.openChannel()
+            firstMessage = true
+        }
         phase = .enumerating
-        emit("Enumerating captures (svc18 type 1)")
+        emit("Enumerating captures (svc18 type 1, ch=0x\(String(format: "%04x", channelID)), reuse=\(!firstMessage))")
 
         link.sendMessage(
             channelID: channelID,
-            serviceID: Self.serviceCaptureList,
+            serviceID: firstMessage ? Self.serviceCaptureList : nil,
             messageType: MsgType.enumerate,
             payload: []
         )
