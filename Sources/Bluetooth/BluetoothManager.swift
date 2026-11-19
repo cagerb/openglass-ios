@@ -726,18 +726,40 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 return
             }
 
-            // svc79: Constellation auth — glasses send EnableTrust (type 1).
-            // We MUST reply with status 0 (OK) or the link gets no scope
-            // and every service except 30/36/79 returns 0xC001.
-            if svcID == 79 {
-                self.log("[svc79] Glasses sent EnableTrust — replying status OK to establish scope")
-                link.sendStatus(channelID: ch, statusCode: 0)
+            // svc4: Connection monitor keepalive — glasses push this periodically.
+            // Reply OK (0x0000) on the mirror channel so the counter increments.
+            if svcID == 4 {
+                if (ch & 0x8000) != 0 && !message.header.hasError && !message.header.isClosed {
+                    let mirror = ch ^ 0x8000
+                    self.log("[svc4] Connection monitor — replying OK on mirror 0x\(String(format: "%04x", mirror))")
+                    link.sendStatus(channelID: mirror, statusCode: 0)
+                }
                 return
             }
 
-            // svc30: App links — glasses push this after encryption. No reply needed.
+            // svc30: Device-peer trust — glasses push this after encryption.
+            // Owner links REFUSE with 0xC001 on the mirror channel.
             if svcID == 30 {
-                self.log("[svc30] Glasses pushed app_links (type \(message.header.messageType), \(message.payload.count)B)")
+                if (ch & 0x8000) != 0 && !message.header.hasError {
+                    let mirror = ch ^ 0x8000
+                    self.log("[svc30] Glasses pushed device-peer trust — refusing 0xC001 on mirror 0x\(String(format: "%04x", mirror))")
+                    link.sendStatus(channelID: mirror, statusCode: 0xC001)
+                } else {
+                    self.log("[svc30] Glasses sent svc30 (type \(message.header.messageType), \(message.payload.count)B)")
+                }
+                return
+            }
+
+            // svc79: Constellation auth — for APP links only, NOT owner links.
+            // Owner links REFUSE with 0xC001 on the mirror channel.
+            if svcID == 79 {
+                if (ch & 0x8000) != 0 && !message.header.hasError {
+                    let mirror = ch ^ 0x8000
+                    self.log("[svc79] Glasses pushed constellation auth — refusing 0xC001 on mirror 0x\(String(format: "%04x", mirror))")
+                    link.sendStatus(channelID: mirror, statusCode: 0xC001)
+                } else {
+                    self.log("[svc79] Glasses sent svc79 (type \(message.header.messageType), \(message.payload.count)B)")
+                }
                 return
             }
 

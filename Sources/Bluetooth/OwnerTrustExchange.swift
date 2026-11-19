@@ -109,9 +109,10 @@ final class OwnerTrustExchange {
 
         switch header.messageType {
         case MsgType.glassesPush, MsgType.trustProof:
-            emit("Glasses pushed their proof (type \(String(format: "0x%04x", header.messageType)))")
-            link.sendStatus(channelID: header.channelID, statusCode: StatusCode.success)
-            emit("Replied status 0x1000 on mirror channel — glasses→phone verified")
+            let mirror = header.channelID ^ 0x8000
+            emit("Glasses pushed their proof (type \(String(format: "0x%04x", header.messageType))) on ch 0x\(String(format: "%04x", header.channelID))")
+            link.sendStatus(channelID: mirror, statusCode: StatusCode.success)
+            emit("Replied status 0x1000 on mirror 0x\(String(format: "%04x", mirror)) — glasses→phone verified")
             glassesToPhoneVerified = true
             checkCompletion(link: link)
         default:
