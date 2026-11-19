@@ -132,14 +132,27 @@ final class OwnerTrustExchange {
     }
 
     private func sendEndLinkSetup(_ link: AirShieldLink) {
-        // DataX close frame: serviceID 0 marks isClosed; no message type, empty payload.
-        emit("Sending EndLinkSetup (close frame) on channel 0x8001")
+        let streamUUID = Self.uuidV4Bytes()
+        let linkUUID = Self.uuidV4Bytes()
+
+        var payload = ProtoWire.field(1, varint: 1)        // MAIN
+        payload += ProtoWire.field(2, bytes: streamUUID)    // stream UUID (RFC 4122 v4)
+        payload += ProtoWire.field(3, bytes: linkUUID)      // link UUID (RFC 4122 v4)
+
+        emit("Sending EndLinkSetup on 0x8001: MAIN, stream=\(hex(streamUUID)) link=\(hex(linkUUID))")
         link.sendMessage(
             channelID: Self.endLinkSetupChannel,
-            serviceID: 0,
-            messageType: nil,
-            payload: []
+            serviceID: nil,
+            messageType: 0x1000,
+            payload: payload
         )
+    }
+
+    private static func uuidV4Bytes() -> [UInt8] {
+        let uuid = UUID()
+        let u = uuid.uuid
+        return [u.0, u.1, u.2, u.3, u.4, u.5, u.6, u.7,
+                u.8, u.9, u.10, u.11, u.12, u.13, u.14, u.15]
     }
 
     // MARK: - Crypto

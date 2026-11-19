@@ -35,10 +35,27 @@ final class ClockSyncService: @unchecked Sendable {
         firstMessage = true
         phase = .syncing
 
-        let nowNanos = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
-        let payload = ProtoWire.field(1, varint: nowNanos)
+        let now = Date()
+        let seconds = UInt64(now.timeIntervalSince1970)
+        let nanos = UInt64((now.timeIntervalSince1970 - Double(seconds)) * 1_000_000_000)
 
-        emit("Sending clock sync: \(nowNanos) ns")
+        // Field 1: nested timestamp {field1: seconds, field2: nanos}
+        var tsInner = ProtoWire.field(1, varint: seconds)
+        tsInner += ProtoWire.field(2, varint: nanos)
+        var payload = ProtoWire.field(1, bytes: tsInner)
+
+        // Field 2: timezone ID
+        let tz = TimeZone.current.identifier
+        payload += ProtoWire.field(2, bytes: Array(tz.utf8))
+
+        // Field 3: 16-byte request UUID
+        let reqUUID = UUID()
+        let u = reqUUID.uuid
+        let uuidBytes: [UInt8] = [u.0, u.1, u.2, u.3, u.4, u.5, u.6, u.7,
+                                   u.8, u.9, u.10, u.11, u.12, u.13, u.14, u.15]
+        payload += ProtoWire.field(3, bytes: uuidBytes)
+
+        emit("Sending DeviceInfoRequest: \(seconds)s tz=\(tz)")
 
         link.sendMessage(
             channelID: channelID,

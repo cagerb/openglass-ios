@@ -94,14 +94,14 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     private(set) var mobileConfigPhase: MobileConfigManager.Phase = .idle
     private(set) var mobileConfigFailure: String = ""
 
-    // MARK: - Protocol services (svc15/18/20/22/26/28)
+    // MARK: - Protocol services (svc15/18/20/22/28)
 
     @ObservationIgnored private var captureListService: CaptureListService?
     @ObservationIgnored private var airshipReceiver: AirshipReceiver?
     @ObservationIgnored private var deviceStatusService: DeviceStatusService?
     @ObservationIgnored private var clockSyncService: ClockSyncService?
     @ObservationIgnored private var assistantService: AssistantService?
-    @ObservationIgnored private var connectionInitSent = false
+    @ObservationIgnored private var endLinkSetupDone = false
 
     var captureListPhase: CaptureListService.Phase { captureListService?.phase ?? .idle }
     var captures: [CaptureEntry] { captureListService?.captures ?? [] }
@@ -235,19 +235,18 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
     func startServicesAfterTrust() {
         bleQueue.async { [weak self] in
             guard let self, let link = self.airShield, link.phase == .secure else { return }
-            self.log("Trust verified — starting protocol services")
-
-            if !self.connectionInitSent {
-                let svc26 = ConnectionInitService()
-                svc26.log = { [weak self] msg in self?.log(msg) }
-                svc26.sendInit(link: link)
-                self.connectionInitSent = true
-                self.log("Waiting 500ms after svc26 init before starting other services...")
-            }
-
-            self.bleQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self.log("Trust verified — waiting for EndLinkSetup exchange to establish scope")
+            // Services are started by the EndLinkSetup handler in onMessage once
+            // the glasses confirm the link setup. If that doesn't arrive within 2s,
+            // start services anyway as a fallback.
+            self.bleQueue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 guard let self, let link = self.airShield, link.phase == .secure else { return }
-                self.startRemainingServices(link: link)
+                if !self.endLinkSetupDone {
+                    self.log("[LinkSetup] Timeout — starting services without EndLinkSetup confirmation")
+                    self.endLinkSetupDone = true
+                    link.skipChannels(to: 10)
+                    self.startRemainingServices(link: link)
+                }
             }
         }
     }
@@ -544,6 +543,12 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
         mobileConfigPhase = .idle
         mobileConfigFailure = ""
         airshipSender = nil
+        endLinkSetupDone = false
+        captureListService = nil
+        airshipReceiver = nil
+        deviceStatusService = nil
+        clockSyncService = nil
+        assistantService = nil
         l2capOpening = false
         triedPSMs.removeAll()
     }
@@ -691,6 +696,32 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
             let svcID = message.header.serviceID
             let ch = message.header.channelID
             self.log("[RX] ch=\(String(format: "0x%04x", ch)) svc=\(svcID) type=\(message.header.messageType) err=\(message.header.hasError) len=\(message.payload.count)")
+
+            // EndLinkSetup exchange: glasses send their EndLinkSetup on the link setup channel.
+            // We MUST reply with status 0x1000 or the glasses drop the link within 1 ms.
+            if (ch == 0x0001 || ch == 0x8001) && self.trustExchange?.phase == .succeeded {
+                if message.header.hasError {
+                    let code = message.header.errorID
+                    self.log("[LinkSetup] Glasses replied to our EndLinkSetup: status 0x\(String(format: "%04x", code))")
+                } else {
+                    self.log("[LinkSetup] Glasses sent EndLinkSetup (type=\(message.header.messageType)) — replying SUCCESS on 0x0001")
+                    link.sendStatus(channelID: 0x0001, statusCode: 0x1000)
+                }
+                if !self.endLinkSetupDone {
+                    self.endLinkSetupDone = true
+                    link.skipChannels(to: 10)
+                    self.log("[LinkSetup] Link setup complete — scope established, starting services")
+                    self.startRemainingServices(link: link)
+                }
+                return
+            }
+
+            // svc30 and svc79: glasses push these after encryption, no scope needed.
+            // Log them but don't process (we don't implement these services yet).
+            if svcID == 30 || svcID == 79 {
+                self.log("[RX] Glasses pushed svc\(svcID) (pre-scope service) — acknowledged")
+                return
+            }
 
             // svc29: firmware session messages
             if svcID == FirmwareManager.serviceFirmware || (svcID == 0 && self.firmwareManager != nil) {

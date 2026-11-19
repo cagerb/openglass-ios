@@ -18,8 +18,10 @@ final class DeviceStatusService: @unchecked Sendable {
     static let serviceDeviceStatus = 28
 
     private enum MsgType {
-        static let statusRequest  = 1
-        static let statusResponse = 2
+        static let subscribe      = 1000  // CompanionDeviceInit
+        static let subscribeAck   = 1001
+        static let deviceState    = 2005  // full snapshot
+        static let stateUpdate    = 2006  // delta update
     }
 
     private(set) var phase: Phase = .idle
@@ -44,13 +46,19 @@ final class DeviceStatusService: @unchecked Sendable {
         }
 
         phase = .requesting
-        emit("Requesting device status (svc28 type 1)")
+
+        // CompanionDeviceInit: field 1 = varint 1, field 2 = interaction key
+        let interactionKey = UUID().uuidString
+        var payload = ProtoWire.field(1, varint: 1)
+        payload += ProtoWire.field(2, bytes: Array(interactionKey.utf8))
+
+        emit("Subscribing to device state (svc28 type 1000, key=\(interactionKey.prefix(8))...)")
 
         link.sendMessage(
             channelID: channelID,
             serviceID: firstMessage ? Self.serviceDeviceStatus : nil,
-            messageType: MsgType.statusRequest,
-            payload: []
+            messageType: MsgType.subscribe,
+            payload: payload
         )
         firstMessage = false
     }
@@ -61,10 +69,14 @@ final class DeviceStatusService: @unchecked Sendable {
         let msgType = message.header.messageType
 
         switch msgType {
-        case MsgType.statusResponse:
+        case MsgType.subscribeAck:
+            emit("Subscribe acknowledged")
+        case MsgType.deviceState, MsgType.stateUpdate:
+            parseStatusResponse(message.payload)
+        case 2007...2043:
             parseStatusResponse(message.payload)
         default:
-            emit("Unexpected svc28 type \(msgType)")
+            emit("svc28 type \(msgType) (\(message.payload.count) bytes)")
         }
     }
 

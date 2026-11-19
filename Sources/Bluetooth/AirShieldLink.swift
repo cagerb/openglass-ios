@@ -695,6 +695,11 @@ final class AirShieldLink: @unchecked Sendable {
         return channel
     }
 
+    /// Bump the next channel past any channels used during setup to avoid collisions.
+    func skipChannels(to minimum: Int) {
+        if nextChannel < minimum { nextChannel = minimum }
+    }
+
     /// Send one DataX message, encrypted. Name the service on a channel's first message only.
     @discardableResult
     func sendMessage(channelID: Int, serviceID: Int?, messageType: Int?, payload: [UInt8]) -> Bool {
