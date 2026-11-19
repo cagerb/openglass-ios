@@ -796,33 +796,35 @@ final class BluetoothManager: NSObject, @unchecked Sendable {
                 }
             }
 
+            let chMirror = ch ^ 0x8000
+
             // svc100: Peer build info response
-            if svcID == PeerBuildInfoService.servicePeerBuildInfo || (svcID == 0 && ch != 0 && self.peerBuildInfoService?.channelID == ch) {
+            if svcID == PeerBuildInfoService.servicePeerBuildInfo || (svcID == 0 && ch != 0 && (self.peerBuildInfoService?.channelID == ch || self.peerBuildInfoService?.channelID == chMirror)) {
                 self.peerBuildInfoService?.handleMessage(message, link: link)
             }
 
             // svc18: Capture list messages
-            if svcID == CaptureListService.serviceCaptureList || (svcID == 0 && ch != 0 && self.captureListService?.channelID == ch) {
+            if svcID == CaptureListService.serviceCaptureList || (svcID == 0 && ch != 0 && (self.captureListService?.channelID == ch || self.captureListService?.channelID == chMirror)) {
                 self.captureListService?.handleMessage(message, link: link)
             }
 
             // svc20: Airship file transfer — route to receiver for downloads FROM glasses
-            if svcID == AirshipReceiver.serviceAirship || (svcID == 0 && ch != 0 && self.airshipReceiver?.channelID == ch) {
+            if svcID == AirshipReceiver.serviceAirship || (svcID == 0 && ch != 0 && (self.airshipReceiver?.channelID == ch || self.airshipReceiver?.channelID == chMirror)) {
                 self.airshipReceiver?.handleMessage(message, link: link)
             }
 
             // svc22: Clock sync response
-            if svcID == ClockSyncService.serviceClockSync || (svcID == 0 && ch != 0 && self.clockSyncService?.channelID == ch) {
+            if svcID == ClockSyncService.serviceClockSync || (svcID == 0 && ch != 0 && (self.clockSyncService?.channelID == ch || self.clockSyncService?.channelID == chMirror)) {
                 self.clockSyncService?.handleMessage(message, link: link)
             }
 
             // svc28: Device status response
-            if svcID == DeviceStatusService.serviceDeviceStatus || (svcID == 0 && ch != 0 && self.deviceStatusService?.channelID == ch) {
+            if svcID == DeviceStatusService.serviceDeviceStatus || (svcID == 0 && ch != 0 && (self.deviceStatusService?.channelID == ch || self.deviceStatusService?.channelID == chMirror)) {
                 self.deviceStatusService?.handleMessage(message, link: link)
             }
 
             // svc15: Assistant messages (glasses-initiated channel OR our response channel)
-            if svcID == AssistantService.serviceAssistant || (svcID == 0 && ch != 0 && self.assistantService != nil && (self.assistantService!.channelID == ch || self.assistantService!.incomingChannelID == ch)) {
+            if svcID == AssistantService.serviceAssistant || (svcID == 0 && ch != 0 && self.assistantService != nil && (self.assistantService!.channelID == ch || self.assistantService!.channelID == chMirror || self.assistantService!.incomingChannelID == ch || self.assistantService!.incomingChannelID == chMirror)) {
                 self.assistantService?.handleMessage(message, link: link)
             }
         }
